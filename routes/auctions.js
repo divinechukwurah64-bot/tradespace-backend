@@ -1,155 +1,186 @@
 const express = require('express');
-const router = express.Router();
 const Auction = require('../models/Auction');
-const User = require('../models/User');
-const authMiddleware = require('../middleware/auth');
+const auth = require('../middleware/auth');
 
-router.post('/', authMiddleware, async (req, res) => {
-  try {
-    const { title, description, category, startingBid, buyItNowPrice, images, condition, shippingCost, endsAt } = req.body;
-    
-    if (!title || !description || !category || !startingBid) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-    
-    const auction = new Auction({
-      sellerId: req.user.userId,
-      title,
-      description,
-      category,
-      startingBid,
-      currentBid: startingBid,
-      buyItNowPrice: buyItNowPrice || null,
-      images: images || [],
-      condition: condition || 'Good',
-      shippingCost: shippingCost || 0,
-      endsAt
-    });
-    
-    await auction.save();
-    
-    res.status(201).json({
-      message: 'Auction created successfully',
-      auction
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+const router = express.Router();
 
+// GET ALL AUCTIONS
 router.get('/', async (req, res) => {
   try {
-    const auctions = await Auction.find({ status: 'active' })
-      .populate('sellerId', 'fullName sellerRating')
+    const auctions = await Auction.find()
+      .populate('sellerId', 'name email phone')
+      .populate('bids.bidderId', 'name email')
       .sort({ createdAt: -1 });
-    
     res.json(auctions);
-  } catch (err) {
+  } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
+// GET SINGLE AUCTION
 router.get('/:id', async (req, res) => {
   try {
     const auction = await Auction.findById(req.params.id)
-      .populate('sellerId', 'fullName sellerRating email phone')
-      .populate('bids.bidderId', 'fullName');
-    
+      .populate('sellerId', 'name email phone')
+      .populate('bids.bidderId', 'name email')
+      .populate('winnerId', 'name email');
+
     if (!auction) {
       return res.status(404).json({ error: 'Auction not found' });
     }
-    
+
     res.json(auction);
-  } catch (err) {
+  } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-router.post('/:id/bid', authMiddleware, async (req, res) => {
+// CREATE AUCTION - Auth required
+router.post('/', auth, async (req, res) => {
+  try {
+    const { title, description, category, condition, startingBid, images } = req.body;
+
+    if (!title || !description || !startingBid || !category) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    if (startingBid < 100) {
+      return res.status(400).json({ error: 'Starting bid must be at least ₦100' });
+    }
+
+    const auction = new Auction({
+      sellerId: req.user.id,
+      title,
+      description,
+      category,
+      condition: condition || 'Good',
+      startingBid,
+      currentBid: null,
+      images: images || [],
+      endsAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      status: 'active',
+    });
+
+    await auction.save();
+
+    const populatedAuction = await auction
+      .populate('sellerId', 'name email phone');
+
+    res.status(201).json(populatedAuction);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PLACE BID - Auth required
+router.post('/:id/bids', auth, async (req, res) => {
   try {
     const { amount } = req.body;
-    const auctionId = req.params.id;
-    
-    if (!amount) {
-      return res.status(400).json({ error: 'Bid amount required' });
-    }
-    
-    const auction = await Auction.findById(auctionId);
-    
+    const auction = await Auction.findById(req.params.id);
+
     if (!auction) {
       return res.status(404).json({ error: 'Auction not found' });
     }
-    
-    if (auction.status !== 'active') {
-      return res.status(400).json({ error: 'Auction is not active' });
-    }
-    
-    if (new Date() > auction.endsAt) {
+
+    const now = new Date();
+    if (now > new Date(auction.endsAt)) {
       return res.status(400).json({ error: 'Auction has ended' });
     }
-    
-    if (amount <= auction.currentBid) {
-      return res.status(400).json({ error: `Bid must be higher than ${auction.currentBid}` });
+
+    if (!amount || amount < 1) {
+      return res.status(400).json({ error: 'Invalid bid amount' });
     }
-    
-    if (auction.sellerId.toString() === req.user.userId) {
-      return res.status(400).json({ error: 'Seller cannot bid on their own auction' });
+
+    const minimumBid = auction.currentBid || auction.startingBid;
+    if (amount <= minimumBid) {
+      return res.status(400).json({ 
+        error: `Bid must be higher than ₦${minimumBid.toLocaleString()}` 
+      });
     }
-    
-    auction.bids.push({
-      bidderId: req.user.userId,
-      amount
-    });
-    
+
+    if (auction.sellerId.toString() === req.user.id) {
+      return res.status(400).json({ error: 'You cannot bid on your own auction' });
+    }
+
     auction.currentBid = amount;
-    await auction.save();
-    
-    const io = req.app.get('io');
-    io.to(`auction:${auctionId}`).emit('auction:bid', {
-      auctionId,
-      bidderId: req.user.userId,
+    auction.bids.push({
+      bidderId: req.user.id,
       amount,
-      timestamp: new Date()
+      timestamp: new Date(),
     });
-    
-    res.json({
-      message: 'Bid placed successfully',
-      auction
-    });
-  } catch (err) {
+
+    await auction.save();
+
+    const populatedAuction = await auction
+      .populate('sellerId', 'name email phone')
+      .populate('bids.bidderId', 'name email');
+
+    res.json(populatedAuction);
+  } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-router.get('/user/my-auctions', authMiddleware, async (req, res) => {
+// DELETE AUCTION - Only seller can delete
+router.delete('/:id', auth, async (req, res) => {
   try {
-    const auctions = await Auction.find({ sellerId: req.user.userId })
-      .sort({ createdAt: -1 });
-    
-    res.json(auctions);
-  } catch (err) {
+    const auction = await Auction.findById(req.params.id);
+
+    if (!auction) {
+      return res.status(404).json({ error: 'Auction not found' });
+    }
+
+    if (auction.sellerId.toString() !== req.user.id) {
+      return res.status(403).json({ error: 'You can only delete your own auctions' });
+    }
+
+    if (auction.bids && auction.bids.length > 0) {
+      return res.status(400).json({ error: 'Cannot delete auction with active bids' });
+    }
+
+    await Auction.findByIdAndDelete(req.params.id);
+    res.json({ message: 'Auction deleted successfully' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// UPDATE AUCTION - Only seller can update
+router.put('/:id', auth, async (req, res) => {
+  try {
+    const auction = await Auction.findById(req.params.id);
+
+    if (!auction) {
+      return res.status(404).json({ error: 'Auction not found' });
+    }
+
+    if (auction.sellerId.toString() !== req.user.id) {
+      return res.status(403).json({ error: 'You can only update your own auctions' });
+    }
+
+    if (auction.bids && auction.bids.length > 0) {
+      return res.status(400).json({ error: 'Cannot update auction with active bids' });
+    }
+
+    const { title, description, category, condition, startingBid, images } = req.body;
+
+    if (title) auction.title = title;
+    if (description) auction.description = description;
+    if (category) auction.category = category;
+    if (condition) auction.condition = condition;
+    if (startingBid && startingBid >= 100) auction.startingBid = startingBid;
+    if (images) auction.images = images;
+
+    await auction.save();
+
+    const populatedAuction = await auction
+      .populate('sellerId', 'name email phone')
+      .populate('bids.bidderId', 'name email');
+
+    res.json(populatedAuction);
+  } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
 module.exports = router;
-router.delete('/:id', authMiddleware, async (req, res) => {
-  try {
-    const auctionId = req.params.id;
-    const auction = await Auction.findById(auctionId);
-
-    if (!auction) {
-      return res.status(404).json({ error: 'Auction not found' });
-    }
-
-    if (auction.sellerId.toString() !== req.user.userId) {
-      return res.status(403).json({ error: 'Only seller can delete this auction' });
-    }
-
-    await Auction.findByIdAndDelete(auctionId);
-
-    res.json({ message: 'Auction deleted successfully' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
