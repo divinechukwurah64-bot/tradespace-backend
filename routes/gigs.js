@@ -11,7 +11,7 @@ router.get('/', async (req, res) => {
       .populate('sellerId', 'name email phone')
       .sort({ createdAt: -1 });
     res.json(gigs);
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -27,7 +27,7 @@ router.get('/:id', async (req, res) => {
     }
 
     res.json(gig);
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -62,7 +62,7 @@ router.post('/', auth, async (req, res) => {
     const populatedGig = await gig.populate('sellerId', 'name email phone');
 
     res.status(201).json(populatedGig);
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -95,7 +95,7 @@ router.put('/:id', auth, async (req, res) => {
     const populatedGig = await gig.populate('sellerId', 'name email phone');
 
     res.json(populatedGig);
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -115,7 +115,7 @@ router.delete('/:id', auth, async (req, res) => {
 
     await Gig.findByIdAndDelete(req.params.id);
     res.json({ message: 'Gig deleted successfully' });
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -127,7 +127,7 @@ router.get('/category/:category', async (req, res) => {
       .populate('sellerId', 'name email phone')
       .sort({ createdAt: -1 });
     res.json(gigs);
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -139,7 +139,7 @@ router.get('/seller/:sellerId', async (req, res) => {
       .populate('sellerId', 'name email phone')
       .sort({ createdAt: -1 });
     res.json(gigs);
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
