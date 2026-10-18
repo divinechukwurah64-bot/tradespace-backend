@@ -4,12 +4,15 @@ const auth = require('../middleware/auth');
 
 const router = express.Router();
 
+const SELLER_FIELDS = 'fullName email phone';
+const BIDDER_FIELDS = 'fullName email';
+
 // GET ALL AUCTIONS
 router.get('/', async (req, res) => {
   try {
     const auctions = await Auction.find()
-      .populate('sellerId', 'name email phone')
-      .populate('bids.bidderId', 'name email')
+      .populate('sellerId', SELLER_FIELDS)
+      .populate('bids.bidderId', BIDDER_FIELDS)
       .sort({ createdAt: -1 });
     res.json(auctions);
   } catch (err) {
@@ -21,9 +24,9 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const auction = await Auction.findById(req.params.id)
-      .populate('sellerId', 'name email phone')
-      .populate('bids.bidderId', 'name email')
-      .populate('winnerId', 'name email');
+      .populate('sellerId', SELLER_FIELDS)
+      .populate('bids.bidderId', BIDDER_FIELDS)
+      .populate('winnerId', BIDDER_FIELDS);
 
     if (!auction) {
       return res.status(404).json({ error: 'Auction not found' });
@@ -49,7 +52,7 @@ router.post('/', auth, async (req, res) => {
     }
 
     const auction = new Auction({
-      sellerId: req.user.id,
+      sellerId: req.user.userId,
       title,
       description,
       category,
@@ -63,10 +66,11 @@ router.post('/', auth, async (req, res) => {
 
     await auction.save();
 
-    const populatedAuction = await auction
-      .populate('sellerId', 'name email phone');
+    await auction.populate([
+      { path: 'sellerId', select: SELLER_FIELDS },
+    ]);
 
-    res.status(201).json(populatedAuction);
+    res.status(201).json(auction);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -93,29 +97,30 @@ router.post('/:id/bids', auth, async (req, res) => {
 
     const minimumBid = auction.currentBid || auction.startingBid;
     if (amount <= minimumBid) {
-      return res.status(400).json({ 
-        error: `Bid must be higher than ₦${minimumBid.toLocaleString()}` 
+      return res.status(400).json({
+        error: `Bid must be higher than ₦${minimumBid.toLocaleString()}`
       });
     }
 
-    if (auction.sellerId.toString() === req.user.id) {
+    if (auction.sellerId.toString() === req.user.userId) {
       return res.status(400).json({ error: 'You cannot bid on your own auction' });
     }
 
     auction.currentBid = amount;
     auction.bids.push({
-      bidderId: req.user.id,
+      bidderId: req.user.userId,
       amount,
       timestamp: new Date(),
     });
 
     await auction.save();
 
-    const populatedAuction = await auction
-      .populate('sellerId', 'name email phone')
-      .populate('bids.bidderId', 'name email');
+    await auction.populate([
+      { path: 'sellerId', select: SELLER_FIELDS },
+      { path: 'bids.bidderId', select: BIDDER_FIELDS },
+    ]);
 
-    res.json(populatedAuction);
+    res.json(auction);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -130,7 +135,7 @@ router.delete('/:id', auth, async (req, res) => {
       return res.status(404).json({ error: 'Auction not found' });
     }
 
-    if (auction.sellerId.toString() !== req.user.id) {
+    if (auction.sellerId.toString() !== req.user.userId) {
       return res.status(403).json({ error: 'You can only delete your own auctions' });
     }
 
@@ -154,7 +159,7 @@ router.put('/:id', auth, async (req, res) => {
       return res.status(404).json({ error: 'Auction not found' });
     }
 
-    if (auction.sellerId.toString() !== req.user.id) {
+    if (auction.sellerId.toString() !== req.user.userId) {
       return res.status(403).json({ error: 'You can only update your own auctions' });
     }
 
@@ -173,11 +178,12 @@ router.put('/:id', auth, async (req, res) => {
 
     await auction.save();
 
-    const populatedAuction = await auction
-      .populate('sellerId', 'name email phone')
-      .populate('bids.bidderId', 'name email');
+    await auction.populate([
+      { path: 'sellerId', select: SELLER_FIELDS },
+      { path: 'bids.bidderId', select: BIDDER_FIELDS },
+    ]);
 
-    res.json(populatedAuction);
+    res.json(auction);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
