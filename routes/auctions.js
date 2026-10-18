@@ -12,7 +12,7 @@ router.get('/', async (req, res) => {
       .populate('bids.bidderId', 'name email')
       .sort({ createdAt: -1 });
     res.json(auctions);
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
