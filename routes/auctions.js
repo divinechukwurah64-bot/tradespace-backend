@@ -7,6 +7,11 @@ const router = express.Router();
 const SELLER_FIELDS = 'fullName email phone';
 const BIDDER_FIELDS = 'fullName email';
 
+const loadAuction = (id) =>
+  Auction.findById(id)
+    .populate('sellerId', SELLER_FIELDS)
+    .populate('bids.bidderId', BIDDER_FIELDS);
+
 // GET ALL AUCTIONS
 router.get('/', async (req, res) => {
   try {
@@ -16,6 +21,7 @@ router.get('/', async (req, res) => {
       .sort({ createdAt: -1 });
     res.json(auctions);
   } catch (err) {
+    console.error('GET /auctions error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -34,6 +40,7 @@ router.get('/:id', async (req, res) => {
 
     res.json(auction);
   } catch (err) {
+    console.error('GET /auctions/:id error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -66,12 +73,11 @@ router.post('/', auth, async (req, res) => {
 
     await auction.save();
 
-    await auction.populate([
-      { path: 'sellerId', select: SELLER_FIELDS },
-    ]);
+    const populatedAuction = await loadAuction(auction._id);
 
-    res.status(201).json(auction);
+    res.status(201).json(populatedAuction);
   } catch (err) {
+    console.error('POST /auctions error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -115,13 +121,11 @@ router.post('/:id/bids', auth, async (req, res) => {
 
     await auction.save();
 
-    await auction.populate([
-      { path: 'sellerId', select: SELLER_FIELDS },
-      { path: 'bids.bidderId', select: BIDDER_FIELDS },
-    ]);
+    const populatedAuction = await loadAuction(auction._id);
 
-    res.json(auction);
+    res.json(populatedAuction);
   } catch (err) {
+    console.error('POST /auctions/:id/bids error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -146,6 +150,7 @@ router.delete('/:id', auth, async (req, res) => {
     await Auction.findByIdAndDelete(req.params.id);
     res.json({ message: 'Auction deleted successfully' });
   } catch (err) {
+    console.error('DELETE /auctions/:id error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -178,13 +183,11 @@ router.put('/:id', auth, async (req, res) => {
 
     await auction.save();
 
-    await auction.populate([
-      { path: 'sellerId', select: SELLER_FIELDS },
-      { path: 'bids.bidderId', select: BIDDER_FIELDS },
-    ]);
+    const populatedAuction = await loadAuction(auction._id);
 
-    res.json(auction);
+    res.json(populatedAuction);
   } catch (err) {
+    console.error('PUT /auctions/:id error:', err);
     res.status(500).json({ error: err.message });
   }
 });
