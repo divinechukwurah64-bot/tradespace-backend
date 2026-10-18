@@ -32,6 +32,7 @@ app.use('/api/auctions', require('./routes/auctions'));
 app.use('/api/gigs', require('./routes/gigs'));
 app.use('/api/transactions', require('./routes/transactions'));
 app.use('/api/messages', require('./routes/messages'));
+app.use('/api/admin', require('./routes/admin'));
 
 io.on('connection', (socket) => {
   console.log('New user connected:', socket.id);
