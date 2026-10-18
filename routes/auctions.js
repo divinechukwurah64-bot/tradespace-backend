@@ -30,7 +30,7 @@ router.get('/:id', async (req, res) => {
     }
 
     res.json(auction);
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -67,7 +67,7 @@ router.post('/', auth, async (req, res) => {
       .populate('sellerId', 'name email phone');
 
     res.status(201).json(populatedAuction);
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -116,7 +116,7 @@ router.post('/:id/bids', auth, async (req, res) => {
       .populate('bids.bidderId', 'name email');
 
     res.json(populatedAuction);
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -140,7 +140,7 @@ router.delete('/:id', auth, async (req, res) => {
 
     await Auction.findByIdAndDelete(req.params.id);
     res.json({ message: 'Auction deleted successfully' });
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -178,7 +178,7 @@ router.put('/:id', auth, async (req, res) => {
       .populate('bids.bidderId', 'name email');
 
     res.json(populatedAuction);
-  } catch (err: any) {
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
