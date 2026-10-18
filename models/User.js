@@ -16,6 +16,9 @@ const userSchema = new mongoose.Schema({
   bankAccountNumber: { type: String, default: null },
   bankCode: { type: String, default: null },
   isVerified: { type: Boolean, default: false },
+  role: { type: String, enum: ['user', 'admin'], default: 'user' },
+  isBanned: { type: Boolean, default: false },
+  acceptedTermsAt: { type: Date, default: null },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
