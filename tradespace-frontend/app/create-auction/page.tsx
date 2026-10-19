@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
@@ -8,6 +8,7 @@ import API from '@/lib/api';
 
 export default function CreateAuction() {
   const router = useRouter();
+  const [checkingAuth, setCheckingAuth] = useState(true);
   const [formData, setFormData] = useState({
     title: '',
     description: '',
@@ -19,6 +20,15 @@ export default function CreateAuction() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [uploadingImage, setUploadingImage] = useState(false);
+
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (!token) {
+      window.location.href = '/login';
+      return;
+    }
+    setCheckingAuth(false);
+  }, []);
 
   const handleImageUpload = async (e) => {
     const file = e.target.files?.[0];
@@ -65,11 +75,21 @@ export default function CreateAuction() {
       });
       router.push('/auctions');
     } catch (err: any) {
+      if (err.response?.status === 401) {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        window.location.href = '/login';
+        return;
+      }
       setError(err.response?.data?.error || 'Failed to create auction');
     } finally {
       setLoading(false);
     }
   };
+
+  if (checkingAuth) {
+    return null;
+  }
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -148,6 +168,7 @@ export default function CreateAuction() {
               onChange={(e) => setFormData({ ...formData, description: e.target.value })}
               placeholder="Describe your item in detail..."
               rows={5}
+              required
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>

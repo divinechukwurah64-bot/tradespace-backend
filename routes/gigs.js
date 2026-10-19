@@ -4,14 +4,45 @@ const auth = require('../middleware/auth');
 
 const router = express.Router();
 
+const SELLER_FIELDS = 'fullName email phone';
+
+const loadGig = (id) => Gig.findById(id).populate('sellerId', SELLER_FIELDS);
+
 // GET ALL GIGS
 router.get('/', async (req, res) => {
   try {
     const gigs = await Gig.find()
-      .populate('sellerId', 'name email phone')
+      .populate('sellerId', SELLER_FIELDS)
       .sort({ createdAt: -1 });
     res.json(gigs);
   } catch (err) {
+    console.error('GET /gigs error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET GIGS BY CATEGORY
+router.get('/category/:category', async (req, res) => {
+  try {
+    const gigs = await Gig.find({ category: req.params.category })
+      .populate('sellerId', SELLER_FIELDS)
+      .sort({ createdAt: -1 });
+    res.json(gigs);
+  } catch (err) {
+    console.error('GET /gigs/category error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET SELLER'S GIGS
+router.get('/seller/:sellerId', async (req, res) => {
+  try {
+    const gigs = await Gig.find({ sellerId: req.params.sellerId })
+      .populate('sellerId', SELLER_FIELDS)
+      .sort({ createdAt: -1 });
+    res.json(gigs);
+  } catch (err) {
+    console.error('GET /gigs/seller error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -19,8 +50,7 @@ router.get('/', async (req, res) => {
 // GET SINGLE GIG
 router.get('/:id', async (req, res) => {
   try {
-    const gig = await Gig.findById(req.params.id)
-      .populate('sellerId', 'name email phone');
+    const gig = await loadGig(req.params.id);
 
     if (!gig) {
       return res.status(404).json({ error: 'Gig not found' });
@@ -28,6 +58,7 @@ router.get('/:id', async (req, res) => {
 
     res.json(gig);
   } catch (err) {
+    console.error('GET /gigs/:id error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -46,7 +77,7 @@ router.post('/', auth, async (req, res) => {
     }
 
     const gig = new Gig({
-      sellerId: req.user.id,
+      sellerId: req.user.userId,
       title,
       description,
       category,
@@ -59,10 +90,11 @@ router.post('/', auth, async (req, res) => {
 
     await gig.save();
 
-    const populatedGig = await gig.populate('sellerId', 'name email phone');
+    const populatedGig = await loadGig(gig._id);
 
     res.status(201).json(populatedGig);
   } catch (err) {
+    console.error('POST /gigs error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -76,7 +108,7 @@ router.put('/:id', auth, async (req, res) => {
       return res.status(404).json({ error: 'Gig not found' });
     }
 
-    if (gig.sellerId.toString() !== req.user.id) {
+    if (gig.sellerId.toString() !== req.user.userId) {
       return res.status(403).json({ error: 'You can only update your own gigs' });
     }
 
@@ -92,10 +124,11 @@ router.put('/:id', auth, async (req, res) => {
 
     await gig.save();
 
-    const populatedGig = await gig.populate('sellerId', 'name email phone');
+    const populatedGig = await loadGig(gig._id);
 
     res.json(populatedGig);
   } catch (err) {
+    console.error('PUT /gigs/:id error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -109,37 +142,14 @@ router.delete('/:id', auth, async (req, res) => {
       return res.status(404).json({ error: 'Gig not found' });
     }
 
-    if (gig.sellerId.toString() !== req.user.id) {
+    if (gig.sellerId.toString() !== req.user.userId) {
       return res.status(403).json({ error: 'You can only delete your own gigs' });
     }
 
     await Gig.findByIdAndDelete(req.params.id);
     res.json({ message: 'Gig deleted successfully' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET GIGS BY CATEGORY
-router.get('/category/:category', async (req, res) => {
-  try {
-    const gigs = await Gig.find({ category: req.params.category })
-      .populate('sellerId', 'name email phone')
-      .sort({ createdAt: -1 });
-    res.json(gigs);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET SELLER'S GIGS
-router.get('/seller/:sellerId', async (req, res) => {
-  try {
-    const gigs = await Gig.find({ sellerId: req.params.sellerId })
-      .populate('sellerId', 'name email phone')
-      .sort({ createdAt: -1 });
-    res.json(gigs);
-  } catch (err) {
+    console.error('DELETE /gigs/:id error:', err);
     res.status(500).json({ error: err.message });
   }
 });

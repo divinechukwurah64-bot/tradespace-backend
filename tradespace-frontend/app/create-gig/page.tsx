@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Plus, ArrowLeft } from 'lucide-react';
@@ -8,6 +8,7 @@ import API from '@/lib/api';
 
 export default function CreateGig() {
   const router = useRouter();
+  const [checkingAuth, setCheckingAuth] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [formData, setFormData] = useState({
@@ -18,6 +19,15 @@ export default function CreateGig() {
     deliveryDays: '3',
     tags: '',
   });
+
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (!token) {
+      window.location.href = '/login';
+      return;
+    }
+    setCheckingAuth(false);
+  }, []);
 
   const handleChange = (e) => {
     setFormData({
@@ -43,11 +53,21 @@ export default function CreateGig() {
 
       router.push('/clear-space');
     } catch (err) {
+      if (err.response?.status === 401) {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        window.location.href = '/login';
+        return;
+      }
       setError(err.response?.data?.error || 'Failed to create gig');
     } finally {
       setLoading(false);
     }
   };
+
+  if (checkingAuth) {
+    return null;
+  }
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -64,7 +84,7 @@ export default function CreateGig() {
 
       <div className="max-w-2xl mx-auto px-4 py-12">
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-8">
-          
+
           {error && (
             <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-6 text-sm">
               {error}
@@ -72,7 +92,7 @@ export default function CreateGig() {
           )}
 
           <form onSubmit={handleSubmit} className="space-y-6">
-            
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Gig Title *

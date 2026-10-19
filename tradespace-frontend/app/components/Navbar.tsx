@@ -12,10 +12,10 @@ export default function Navbar() {
   const [user, setUser] = useState(null);
   const [mounted, setMounted] = useState(false);
 
- useEffect(() => {
-  setMounted(true);
-  checkUser();
-}, []);
+  useEffect(() => {
+    setMounted(true);
+    checkUser();
+  }, []);
 
   const checkUser = () => {
     const userData = localStorage.getItem('user');
@@ -26,7 +26,8 @@ export default function Navbar() {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     setUser(null);
-    router.push('/');
+    setIsOpen(false);
+    window.location.href = '/login';
   };
 
   if (!mounted) return null;
@@ -35,7 +36,7 @@ export default function Navbar() {
     <nav className="bg-white border-b border-gray-200 sticky top-0 z-50">
       <div className="max-w-7xl mx-auto px-4">
         <div className="flex justify-between items-center h-16">
-          
+
           {/* Logo */}
           <Link href="/" className="flex items-center gap-2 font-bold text-xl md:text-2xl text-blue-600">
             TradeSpace
