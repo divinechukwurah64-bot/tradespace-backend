@@ -6,15 +6,24 @@ const authMiddleware = require('../middleware/auth');
 
 router.post('/register', async (req, res) => {
   try {
-    const { fullName, email, password, phone } = req.body;
+    const { fullName, email, password, phone, acceptedTerms } = req.body;
     if (!fullName || !email || !password) {
       return res.status(400).json({ error: 'Missing required fields' });
+    }
+    if (acceptedTerms !== true) {
+      return res.status(400).json({ error: 'You must accept the Terms and Conditions' });
     }
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res.status(400).json({ error: 'User already exists' });
     }
-    const user = new User({ fullName, email, password, phone });
+    const user = new User({
+      fullName,
+      email,
+      password,
+      phone,
+      acceptedTermsAt: new Date()
+    });
     await user.save();
     const token = jwt.sign({ userId: user._id, email: user.email }, process.env.JWT_SECRET, { expiresIn: '7d' });
     res.status(201).json({
@@ -54,7 +63,10 @@ router.post('/login', async (req, res) => {
 
 router.get('/me', authMiddleware, async (req, res) => {
   try {
-    const user = await User.findById(req.user.userId);
+    const user = await User.findById(req.user.userId).select('-password');
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
     res.json(user);
   } catch (err) {
     res.status(500).json({ error: err.message });

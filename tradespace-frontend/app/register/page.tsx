@@ -10,6 +10,7 @@ export default function Register() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [formData, setFormData] = useState({
     fullName: '',
     email: '',
@@ -27,13 +28,19 @@ export default function Register() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+
+    if (!acceptedTerms) {
+      setError('You must accept the Terms and Conditions to create an account');
+      return;
+    }
+
     setLoading(true);
 
     try {
-      const response = await authAPI.register(formData);
+      const response = await authAPI.register({ ...formData, acceptedTerms: true });
       localStorage.setItem('token', response.data.token);
       localStorage.setItem('user', JSON.stringify(response.data.user));
-     window.location.href = '/auctions';
+      window.location.href = '/auctions';
     } catch (err) {
       setError(err.response?.data?.error || 'Registration failed');
     } finally {
@@ -56,7 +63,7 @@ export default function Register() {
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          
+
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Full Name</label>
             <div className="relative">
@@ -120,9 +127,29 @@ export default function Register() {
             </div>
           </div>
 
+          <div className="flex items-start gap-3 pt-2">
+            <input
+              id="acceptedTerms"
+              type="checkbox"
+              checked={acceptedTerms}
+              onChange={(e) => setAcceptedTerms(e.target.checked)}
+              className="mt-1 w-4 h-4 cursor-pointer"
+            />
+            <label htmlFor="acceptedTerms" className="text-sm text-gray-600 cursor-pointer">
+              I agree to the{' '}
+              <Link
+                href="/terms"
+                target="_blank"
+                className="text-blue-600 font-bold hover:text-blue-700"
+              >
+                Terms and Conditions
+              </Link>
+            </label>
+          </div>
+
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || !acceptedTerms}
             className="w-full bg-blue-600 text-white py-2 rounded-lg font-bold hover:bg-blue-700 disabled:bg-gray-400 mt-6"
           >
             {loading ? 'Creating account...' : 'Sign Up'}
