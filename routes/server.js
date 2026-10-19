@@ -3,7 +3,9 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const http = require('http');
+const jwt = require('jsonwebtoken');
 const socketIO = require('socket.io');
+const User = require('./models/User');
 
 dotenv.config();
 
@@ -75,14 +77,40 @@ app.use('/api/transactions', require('./routes/transactions'));
 app.use('/api/messages', require('./routes/messages'));
 app.use('/api/admin', require('./routes/admin'));
 
+// Identify the user on connect. Visitors without a valid token still connect,
+// but as anonymous: they can watch auctions and never join a user room.
+io.use(async (socket, next) => {
+  try {
+    const token = socket.handshake.auth && socket.handshake.auth.token;
+    if (!token) return next();
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.userId).select('isBanned');
+
+    if (user && !user.isBanned) {
+      socket.userId = decoded.userId.toString();
+    }
+    return next();
+  } catch (err) {
+    return next();
+  }
+});
+
 io.on('connection', (socket) => {
-  console.log('New user connected:', socket.id);
+  console.log('New user connected:', socket.id, socket.userId ? '(logged in)' : '(anonymous)');
+
+  // Private room named with the user id. routes/messages.js sends to this room.
+  if (socket.userId) {
+    socket.join(socket.userId);
+  }
 
   socket.on('join:auction', (auctionId) => {
+    if (typeof auctionId !== 'string' || !auctionId || auctionId.length > 64) return;
     socket.join(`auction:${auctionId}`);
   });
 
   socket.on('leave:auction', (auctionId) => {
+    if (typeof auctionId !== 'string' || !auctionId || auctionId.length > 64) return;
     socket.leave(`auction:${auctionId}`);
   });
 
