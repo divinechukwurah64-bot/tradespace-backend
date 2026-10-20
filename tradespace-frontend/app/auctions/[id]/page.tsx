@@ -71,6 +71,22 @@ export default function AuctionDetail() {
     return () => clearInterval(interval);
   }, [auction]);
 
+  const fetchAuctionData = async () => {
+    try {
+      const response = await API.get(`/auctions/${auctionId}`);
+      setAuction(response.data);
+    } catch (err) {
+      console.error('Failed to fetch auction');
+    }
+  };
+
+  // Refresh every 5 seconds so new bids and the live banner show up
+  useEffect(() => {
+    const interval = setInterval(fetchAuctionData, 5000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auctionId]);
+
   const handlePlaceBid = async (e: any) => {
     e.preventDefault();
     setBidError('');
@@ -95,23 +111,14 @@ export default function AuctionDetail() {
     }
   };
 
-  const fetchAuctionData = async () => {
-    try {
-      const response = await API.get(`/auctions/${auctionId}`);
-      setAuction(response.data);
-    } catch (err) {
-      console.error('Failed to fetch auction');
-    }
-  };
-
   const handleDeleteAuction = async () => {
     if (!window.confirm('Are you sure you want to delete this auction?')) return;
 
     try {
       await API.delete(`/auctions/${auctionId}`);
       router.push('/auctions');
-    } catch (err) {
-      setError('Failed to delete auction');
+    } catch (err: any) {
+      setError(err.response?.data?.error || 'Failed to delete auction');
     }
   };
 
@@ -139,9 +146,10 @@ export default function AuctionDetail() {
     );
   }
 
-  const isSellerLoggedIn = currentUser?.id === auction?.seller?.id;
-  const images = auction.images && auction.images.length > 0 
-    ? auction.images 
+  const sellerId = auction?.sellerId?._id;
+  const isSellerLoggedIn = !!(currentUser && sellerId && currentUser._id === sellerId);
+  const images = auction.images && auction.images.length > 0
+    ? auction.images
     : ['https://via.placeholder.com/500x500?text=No+Image'];
 
   return (
@@ -157,15 +165,26 @@ export default function AuctionDetail() {
       </div>
 
       <div className="max-w-6xl mx-auto px-4 py-8">
+        {error && (
+          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-6 text-sm">
+            {error}
+          </div>
+        )}
+
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           <div className="lg:col-span-2">
-            <div className="bg-white rounded-lg shadow overflow-hidden mb-4">
+            <div className="relative bg-white rounded-lg shadow overflow-hidden mb-4">
+              {auction.isLive && (
+                <span className="absolute top-3 left-3 z-10 bg-red-600 text-white text-xs font-bold px-3 py-1 rounded-full">
+                  LIVE
+                </span>
+              )}
               <img
                 src={images[imageIndex]}
                 alt={auction.title}
                 className="w-full h-64 md:h-80 object-cover"
               />
-              
+
               {images.length > 1 && (
                 <div className="bg-gray-100 p-4 flex gap-2 overflow-x-auto">
                   {images.map((img: string, idx: number) => (
@@ -186,7 +205,7 @@ export default function AuctionDetail() {
             <div className="bg-white rounded-lg shadow p-6 mb-6">
               <h2 className="text-2xl font-bold text-black mb-4">Description</h2>
               <p className="text-gray-700 leading-relaxed mb-4">{auction.description}</p>
-              
+
               <div className="grid grid-cols-2 gap-4 pt-4 border-t border-gray-200">
                 <div>
                   <p className="text-sm text-gray-600">Category</p>
@@ -206,15 +225,15 @@ export default function AuctionDetail() {
               </h3>
               <div className="flex items-center gap-4 mb-4">
                 <div className="w-16 h-16 bg-gradient-to-br from-blue-600 to-blue-800 rounded-full flex items-center justify-center text-white text-2xl font-bold">
-                  {auction.sellerId?.name?.[0]?.toUpperCase() || auction.seller?.name?.[0]?.toUpperCase() || 'S'}
+                  {auction.sellerId?.fullName?.[0]?.toUpperCase() || 'S'}
                 </div>
                 <div>
-                  <p className="font-semibold text-black text-lg">{auction.sellerId?.name || auction.seller?.name || 'Unknown Seller'}</p>
-                  <p className="text-sm text-gray-600">{auction.sellerId?.email || auction.seller?.email || 'No email'}</p>
-                  <p className="text-sm text-gray-600">{auction.sellerId?.phone || auction.seller?.phone || 'No phone'}</p>
+                  <p className="font-semibold text-black text-lg">{auction.sellerId?.fullName || 'Unknown Seller'}</p>
+                  <p className="text-sm text-gray-600">{auction.sellerId?.email || 'No email'}</p>
+                  <p className="text-sm text-gray-600">{auction.sellerId?.phone || 'No phone'}</p>
                 </div>
               </div>
-              
+
               <div className="pt-4 border-t border-gray-200">
                 <p className="text-xs text-gray-600 mb-2">Seller Stats</p>
                 <div className="grid grid-cols-2 gap-4">
@@ -236,6 +255,24 @@ export default function AuctionDetail() {
           </div>
 
           <div>
+            {auction.isLive && !isSellerLoggedIn && (
+              <Link
+                href={`/live/${auctionId}`}
+                className="block bg-red-600 text-white rounded-lg p-4 mb-6 text-center font-bold hover:bg-red-700 transition"
+              >
+                LIVE NOW - Watch the stream
+              </Link>
+            )}
+
+            {isSellerLoggedIn && timeLeft !== 'Auction Ended' && auction.status === 'active' && (
+              <Link
+                href={`/live/${auctionId}`}
+                className="block bg-red-600 text-white rounded-lg p-4 mb-6 text-center font-bold hover:bg-red-700 transition"
+              >
+                {auction.isLive ? 'You are live - Manage Stream' : 'Go Live'}
+              </Link>
+            )}
+
             <div className="bg-red-50 border-2 border-red-200 rounded-lg p-6 mb-6">
               <div className="flex items-center gap-2 mb-2">
                 <Clock className="w-5 h-5 text-red-600" />
@@ -301,7 +338,7 @@ export default function AuctionDetail() {
               <div className="bg-gray-100 rounded-lg p-6 text-center">
                 <p className="text-gray-700 font-semibold">This auction has ended</p>
                 {auction.winnerId && (
-                  <p className="text-sm text-gray-600 mt-2">Winner: {auction.winner?.name}</p>
+                  <p className="text-sm text-gray-600 mt-2">Winner: {auction.winnerId?.fullName}</p>
                 )}
               </div>
             )}
@@ -324,7 +361,7 @@ export default function AuctionDetail() {
               {[...auction.bids].reverse().map((bid: any, idx: number) => (
                 <div key={idx} className="flex justify-between items-center py-3 border-b border-gray-200 last:border-b-0">
                   <div>
-                    <p className="font-semibold text-black">{bid.bidderId?.name || 'Anonymous'}</p>
+                    <p className="font-semibold text-black">{bid.bidderId?.fullName || 'Anonymous'}</p>
                     <p className="text-sm text-gray-600">
                       {new Date(bid.timestamp).toLocaleDateString()} at {new Date(bid.timestamp).toLocaleTimeString()}
                     </p>
