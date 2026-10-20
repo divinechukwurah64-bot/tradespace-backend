@@ -22,6 +22,8 @@ const auctionSchema = new mongoose.Schema({
   winningBid: { type: Number, default: null },
   shippingCost: { type: Number, default: 0 },
   location: { type: String, default: 'Nigeria' },
+  isLive: { type: Boolean, default: false },
+  liveStartedAt: { type: Date, default: null },
   updatedAt: { type: Date, default: Date.now }
 });
 

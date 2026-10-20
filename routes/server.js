@@ -76,6 +76,7 @@ app.use('/api/gigs', require('./routes/gigs'));
 app.use('/api/transactions', require('./routes/transactions'));
 app.use('/api/messages', require('./routes/messages'));
 app.use('/api/admin', require('./routes/admin'));
+app.use('/api/live', require('./routes/live'));
 
 // Identify the user on connect. Visitors without a valid token still connect,
 // but as anonymous: they can watch auctions and never join a user room.

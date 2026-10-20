@@ -5,10 +5,12 @@ import { useRouter } from 'next/navigation';
 import API, { authAPI } from '../../lib/api';
 
 type Stats = {
-  users: number;
-  bannedUsers: number;
-  activeAuctions: number;
-  totalAuctions: number;
+  users?: number;
+  bannedUsers?: number;
+  activeAuctions?: number;
+  totalAuctions?: number;
+  totalGigs?: number;
+  openDisputes?: number;
 };
 
 type AdminUser = {
@@ -31,14 +33,41 @@ type AdminAuction = {
   sellerId?: { fullName?: string; email?: string } | null;
 };
 
+type AdminGig = {
+  _id: string;
+  title: string;
+  category: string;
+  status: string;
+  startingPrice: number;
+  orders: number;
+  createdAt: string;
+  sellerId?: { fullName?: string; email?: string } | null;
+};
+
+type AdminTransaction = {
+  _id: string;
+  amount: number;
+  platformCommission: number;
+  paymentStatus: string;
+  inspectionStatus: string;
+  disputeStatus: string;
+  createdAt: string;
+  buyerId?: { fullName?: string; email?: string } | null;
+  sellerId?: { fullName?: string; email?: string } | null;
+  auctionId?: { title?: string } | null;
+  gigId?: { title?: string } | null;
+};
+
+type TabName = 'users' | 'auctions' | 'gigs' | 'transactions';
+
 const s = {
   page: { maxWidth: 1100, margin: '0 auto', padding: '32px 16px', color: '#111827' } as React.CSSProperties,
   title: { fontSize: 28, fontWeight: 700, marginBottom: 24 } as React.CSSProperties,
   statsRow: { display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 28 } as React.CSSProperties,
-  statCard: { flex: '1 1 200px', background: '#ffffff', border: '1px solid #e5e7eb', borderRadius: 12, padding: 20 } as React.CSSProperties,
+  statCard: { flex: '1 1 160px', background: '#ffffff', border: '1px solid #e5e7eb', borderRadius: 12, padding: 20 } as React.CSSProperties,
   statNumber: { fontSize: 30, fontWeight: 700 } as React.CSSProperties,
   statLabel: { fontSize: 14, color: '#6b7280', marginTop: 4 } as React.CSSProperties,
-  tabs: { display: 'flex', gap: 8, marginBottom: 16 } as React.CSSProperties,
+  tabs: { display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' } as React.CSSProperties,
   tab: (active: boolean): React.CSSProperties => ({
     padding: '8px 18px',
     borderRadius: 8,
@@ -73,6 +102,7 @@ const s = {
     fontWeight: 600,
   }),
   search: { padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: 8, width: 280, marginBottom: 12 } as React.CSSProperties,
+  filterRow: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, fontSize: 14 } as React.CSSProperties,
   error: { background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c', padding: 12, borderRadius: 8, marginBottom: 16 } as React.CSSProperties,
 };
 
@@ -81,14 +111,36 @@ const naira = (n: number | null | undefined) =>
 
 const formatDate = (d: string) => new Date(d).toLocaleString();
 
+const paymentColor = (status: string) => {
+  switch (status) {
+    case 'released': return '#16a34a';
+    case 'captured':
+    case 'held': return '#2563eb';
+    case 'refunded': return '#d97706';
+    case 'failed': return '#dc2626';
+    default: return '#6b7280';
+  }
+};
+
+const disputeColor = (status: string) => {
+  switch (status) {
+    case 'filed': return '#dc2626';
+    case 'resolved': return '#16a34a';
+    default: return '#6b7280';
+  }
+};
+
 export default function AdminPage() {
   const router = useRouter();
 
   const [checking, setChecking] = useState(true);
-  const [tab, setTab] = useState<'users' | 'auctions'>('users');
+  const [tab, setTab] = useState<TabName>('users');
   const [stats, setStats] = useState<Stats | null>(null);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [auctions, setAuctions] = useState<AdminAuction[]>([]);
+  const [gigs, setGigs] = useState<AdminGig[]>([]);
+  const [transactions, setTransactions] = useState<AdminTransaction[]>([]);
+  const [disputesOnly, setDisputesOnly] = useState(false);
   const [search, setSearch] = useState('');
   const [error, setError] = useState('');
 
@@ -110,6 +162,16 @@ export default function AdminPage() {
     setAuctions(res.data);
   }, []);
 
+  const loadGigs = useCallback(async () => {
+    const res = await API.get('/admin/gigs');
+    setGigs(res.data);
+  }, []);
+
+  const loadTransactions = useCallback(async () => {
+    const res = await API.get('/admin/transactions');
+    setTransactions(res.data);
+  }, []);
+
   // Check the user is a logged in admin, then load everything
   useEffect(() => {
     const init = async () => {
@@ -124,7 +186,13 @@ export default function AdminPage() {
           router.replace('/');
           return;
         }
-        await Promise.all([loadStats(), loadUsers(''), loadAuctions()]);
+        await Promise.all([
+          loadStats(),
+          loadUsers(''),
+          loadAuctions(),
+          loadGigs(),
+          loadTransactions(),
+        ]);
         setChecking(false);
       } catch (err: any) {
         if (err?.response?.status === 401) {
@@ -136,7 +204,7 @@ export default function AdminPage() {
       }
     };
     init();
-  }, [router, loadStats, loadUsers, loadAuctions]);
+  }, [router, loadStats, loadUsers, loadAuctions, loadGigs, loadTransactions]);
 
   const handleSearch = async (value: string) => {
     setSearch(value);
@@ -181,6 +249,29 @@ export default function AdminPage() {
     }
   };
 
+  const toggleGig = async (gig: AdminGig) => {
+    const action = gig.status === 'active' ? 'pause' : 'reactivate';
+    if (!window.confirm(`Are you sure you want to ${action} "${gig.title}"?`)) return;
+    try {
+      setError('');
+      await API.patch(`/admin/gigs/${gig._id}/status`);
+      await loadGigs();
+    } catch (err: any) {
+      setError(getErrorMessage(err));
+    }
+  };
+
+  const removeGig = async (gig: AdminGig) => {
+    if (!window.confirm(`Permanently remove "${gig.title}"? This cannot be undone.`)) return;
+    try {
+      setError('');
+      await API.delete(`/admin/gigs/${gig._id}`);
+      await Promise.all([loadGigs(), loadStats()]);
+    } catch (err: any) {
+      setError(getErrorMessage(err));
+    }
+  };
+
   if (checking) {
     return (
       <div style={s.page}>
@@ -188,6 +279,10 @@ export default function AdminPage() {
       </div>
     );
   }
+
+  const visibleTransactions = disputesOnly
+    ? transactions.filter((t) => t.disputeStatus === 'filed')
+    : transactions;
 
   return (
     <div style={s.page}>
@@ -198,20 +293,28 @@ export default function AdminPage() {
       {stats && (
         <div style={s.statsRow}>
           <div style={s.statCard}>
-            <div style={s.statNumber}>{stats.users}</div>
+            <div style={s.statNumber}>{stats.users ?? 0}</div>
             <div style={s.statLabel}>Total users</div>
           </div>
           <div style={s.statCard}>
-            <div style={s.statNumber}>{stats.bannedUsers}</div>
+            <div style={s.statNumber}>{stats.bannedUsers ?? 0}</div>
             <div style={s.statLabel}>Banned users</div>
           </div>
           <div style={s.statCard}>
-            <div style={s.statNumber}>{stats.activeAuctions}</div>
+            <div style={s.statNumber}>{stats.activeAuctions ?? 0}</div>
             <div style={s.statLabel}>Active auctions</div>
           </div>
           <div style={s.statCard}>
-            <div style={s.statNumber}>{stats.totalAuctions}</div>
+            <div style={s.statNumber}>{stats.totalAuctions ?? 0}</div>
             <div style={s.statLabel}>Total auctions</div>
+          </div>
+          <div style={s.statCard}>
+            <div style={s.statNumber}>{stats.totalGigs ?? 0}</div>
+            <div style={s.statLabel}>Total gigs</div>
+          </div>
+          <div style={s.statCard}>
+            <div style={s.statNumber}>{stats.openDisputes ?? 0}</div>
+            <div style={s.statLabel}>Open disputes</div>
           </div>
         </div>
       )}
@@ -222,6 +325,12 @@ export default function AdminPage() {
         </button>
         <button style={s.tab(tab === 'auctions')} onClick={() => setTab('auctions')}>
           Auctions
+        </button>
+        <button style={s.tab(tab === 'gigs')} onClick={() => setTab('gigs')}>
+          Gigs
+        </button>
+        <button style={s.tab(tab === 'transactions')} onClick={() => setTab('transactions')}>
+          Transactions
         </button>
       </div>
 
@@ -336,6 +445,118 @@ export default function AdminPage() {
             </tbody>
           </table>
         </div>
+      )}
+
+      {tab === 'gigs' && (
+        <div style={s.tableWrap}>
+          <table style={s.table}>
+            <thead>
+              <tr>
+                <th style={s.th}>Title</th>
+                <th style={s.th}>Seller</th>
+                <th style={s.th}>Category</th>
+                <th style={s.th}>Price</th>
+                <th style={s.th}>Orders</th>
+                <th style={s.th}>Status</th>
+                <th style={s.th}>Created</th>
+                <th style={s.th}>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {gigs.length === 0 && (
+                <tr>
+                  <td style={s.td} colSpan={8}>No gigs found</td>
+                </tr>
+              )}
+              {gigs.map((g) => (
+                <tr key={g._id}>
+                  <td style={s.td}>{g.title}</td>
+                  <td style={s.td}>{g.sellerId?.fullName || 'Unknown'}</td>
+                  <td style={s.td}>{g.category}</td>
+                  <td style={s.td}>{naira(g.startingPrice)}</td>
+                  <td style={s.td}>{g.orders}</td>
+                  <td style={s.td}>
+                    <span
+                      style={s.badge(
+                        g.status === 'active' ? '#16a34a' : g.status === 'paused' ? '#d97706' : '#6b7280'
+                      )}
+                    >
+                      {g.status}
+                    </span>
+                  </td>
+                  <td style={s.td}>{formatDate(g.createdAt)}</td>
+                  <td style={s.td}>
+                    {g.status !== 'completed' && (
+                      <button
+                        style={s.btn(g.status === 'active' ? '#d97706' : '#16a34a')}
+                        onClick={() => toggleGig(g)}
+                      >
+                        {g.status === 'active' ? 'Pause' : 'Reactivate'}
+                      </button>
+                    )}
+                    <button style={s.btn('#dc2626')} onClick={() => removeGig(g)}>
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {tab === 'transactions' && (
+        <>
+          <label style={s.filterRow}>
+            <input
+              type="checkbox"
+              checked={disputesOnly}
+              onChange={(e) => setDisputesOnly(e.target.checked)}
+            />
+            Show open disputes only
+          </label>
+          <div style={s.tableWrap}>
+            <table style={s.table}>
+              <thead>
+                <tr>
+                  <th style={s.th}>Item</th>
+                  <th style={s.th}>Buyer</th>
+                  <th style={s.th}>Seller</th>
+                  <th style={s.th}>Amount</th>
+                  <th style={s.th}>Commission</th>
+                  <th style={s.th}>Payment</th>
+                  <th style={s.th}>Inspection</th>
+                  <th style={s.th}>Dispute</th>
+                  <th style={s.th}>Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleTransactions.length === 0 && (
+                  <tr>
+                    <td style={s.td} colSpan={9}>No transactions found</td>
+                  </tr>
+                )}
+                {visibleTransactions.map((t) => (
+                  <tr key={t._id}>
+                    <td style={s.td}>{t.auctionId?.title || t.gigId?.title || 'Unknown item'}</td>
+                    <td style={s.td}>{t.buyerId?.fullName || 'Unknown'}</td>
+                    <td style={s.td}>{t.sellerId?.fullName || 'Unknown'}</td>
+                    <td style={s.td}>{naira(t.amount)}</td>
+                    <td style={s.td}>{naira(t.platformCommission)}</td>
+                    <td style={s.td}>
+                      <span style={s.badge(paymentColor(t.paymentStatus))}>{t.paymentStatus}</span>
+                    </td>
+                    <td style={s.td}>{t.inspectionStatus}</td>
+                    <td style={s.td}>
+                      <span style={s.badge(disputeColor(t.disputeStatus))}>{t.disputeStatus}</span>
+                    </td>
+                    <td style={s.td}>{formatDate(t.createdAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </div>
   );
