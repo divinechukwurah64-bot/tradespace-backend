@@ -21,6 +21,36 @@ export default function AuctionDetail() {
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [imageIndex, setImageIndex] = useState(0);
 
+  const [likeCount, setLikeCount] = useState(0);
+  const [liked, setLiked] = useState(false);
+  const [comments, setComments] = useState<any[]>([]);
+  const [commentCount, setCommentCount] = useState(0);
+  const [commentText, setCommentText] = useState('');
+  const [commentError, setCommentError] = useState('');
+  const [posting, setPosting] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const fetchAuctionData = async () => {
+    try {
+      const response = await API.get(`/auctions/${auctionId}`);
+      setAuction(response.data);
+    } catch (err) {
+      console.error('Failed to fetch auction');
+    }
+  };
+
+  const fetchSocial = async () => {
+    try {
+      const response = await API.get(`/auctions/${auctionId}/social`);
+      setLikeCount(response.data.likeCount);
+      setLiked(response.data.liked);
+      setCommentCount(response.data.commentCount);
+      setComments(response.data.comments);
+    } catch (err) {
+      console.error('Failed to fetch likes and comments');
+    }
+  };
+
   useEffect(() => {
     const fetchAuction = async () => {
       try {
@@ -44,6 +74,8 @@ export default function AuctionDetail() {
 
     fetchAuction();
     fetchUser();
+    fetchSocial();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auctionId]);
 
   useEffect(() => {
@@ -71,18 +103,12 @@ export default function AuctionDetail() {
     return () => clearInterval(interval);
   }, [auction]);
 
-  const fetchAuctionData = async () => {
-    try {
-      const response = await API.get(`/auctions/${auctionId}`);
-      setAuction(response.data);
-    } catch (err) {
-      console.error('Failed to fetch auction');
-    }
-  };
-
-  // Refresh every 5 seconds so new bids and the live banner show up
+  // Refresh every 5 seconds so new bids, comments and the live banner show up
   useEffect(() => {
-    const interval = setInterval(fetchAuctionData, 5000);
+    const interval = setInterval(() => {
+      fetchAuctionData();
+      fetchSocial();
+    }, 5000);
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auctionId]);
@@ -122,6 +148,59 @@ export default function AuctionDetail() {
     }
   };
 
+  const handleLike = async () => {
+    if (!currentUser) {
+      window.location.href = '/login';
+      return;
+    }
+    try {
+      const response = await API.post(`/auctions/${auctionId}/like`);
+      setLiked(response.data.liked);
+      setLikeCount(response.data.likeCount);
+    } catch (err: any) {
+      setError(err.response?.data?.error || 'Could not update your like');
+    }
+  };
+
+  const handleShare = async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      setError('Could not copy the link');
+    }
+  };
+
+  const handlePostComment = async (e: any) => {
+    e.preventDefault();
+    setCommentError('');
+
+    const text = commentText.trim();
+    if (!text) return;
+
+    setPosting(true);
+    try {
+      await API.post(`/auctions/${auctionId}/comments`, { content: text });
+      setCommentText('');
+      await fetchSocial();
+    } catch (err: any) {
+      setCommentError(err.response?.data?.error || 'Could not post your comment');
+    } finally {
+      setPosting(false);
+    }
+  };
+
+  const handleDeleteComment = async (commentId: string) => {
+    if (!window.confirm('Delete this comment?')) return;
+    try {
+      await API.delete(`/auctions/${auctionId}/comments/${commentId}`);
+      await fetchSocial();
+    } catch (err: any) {
+      setCommentError(err.response?.data?.error || 'Could not delete the comment');
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -148,6 +227,7 @@ export default function AuctionDetail() {
 
   const sellerId = auction?.sellerId?._id;
   const isSellerLoggedIn = !!(currentUser && sellerId && currentUser._id === sellerId);
+  const isAdmin = currentUser?.role === 'admin';
   const images = auction.images && auction.images.length > 0
     ? auction.images
     : ['https://via.placeholder.com/500x500?text=No+Image'];
@@ -335,7 +415,7 @@ export default function AuctionDetail() {
             )}
 
             {timeLeft === 'Auction Ended' && (
-              <div className="bg-gray-100 rounded-lg p-6 text-center">
+              <div className="bg-gray-100 rounded-lg p-6 text-center mb-6">
                 <p className="text-gray-700 font-semibold">This auction has ended</p>
                 {auction.winnerId && (
                   <p className="text-sm text-gray-600 mt-2">Winner: {auction.winnerId?.fullName}</p>
@@ -344,11 +424,21 @@ export default function AuctionDetail() {
             )}
 
             <div className="flex gap-3">
-              <button className="flex-1 flex items-center justify-center gap-2 bg-white border border-gray-300 text-gray-700 py-2 rounded-lg hover:bg-gray-50 transition">
-                <Heart className="w-5 h-5" />
+              <button
+                onClick={handleLike}
+                className={`flex-1 flex items-center justify-center gap-2 bg-white border py-2 rounded-lg hover:bg-gray-50 transition ${
+                  liked ? 'border-red-300 text-red-600' : 'border-gray-300 text-gray-700'
+                }`}
+              >
+                <Heart className="w-5 h-5" fill={liked ? 'currentColor' : 'none'} />
+                <span className="font-semibold">{likeCount}</span>
               </button>
-              <button className="flex-1 flex items-center justify-center gap-2 bg-white border border-gray-300 text-gray-700 py-2 rounded-lg hover:bg-gray-50 transition">
+              <button
+                onClick={handleShare}
+                className="flex-1 flex items-center justify-center gap-2 bg-white border border-gray-300 text-gray-700 py-2 rounded-lg hover:bg-gray-50 transition"
+              >
                 <Share2 className="w-5 h-5" />
+                {copied && <span className="font-semibold text-sm">Link copied</span>}
               </button>
             </div>
           </div>
@@ -372,6 +462,83 @@ export default function AuctionDetail() {
             </div>
           </div>
         )}
+
+        <div className="mt-8 bg-white rounded-lg shadow p-6">
+          <h3 className="text-xl font-bold text-black mb-4">Comments ({commentCount})</h3>
+
+          {currentUser ? (
+            <form onSubmit={handlePostComment} className="mb-6">
+              {commentError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded mb-3 text-sm">
+                  {commentError}
+                </div>
+              )}
+              <textarea
+                value={commentText}
+                onChange={(e) => setCommentText(e.target.value)}
+                placeholder="Write a comment..."
+                rows={3}
+                maxLength={500}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black bg-white"
+              />
+              <div className="flex items-center justify-between mt-2">
+                <span className="text-xs text-gray-500">{commentText.length}/500</span>
+                <button
+                  type="submit"
+                  disabled={posting || !commentText.trim()}
+                  className="bg-blue-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-blue-700 disabled:bg-gray-400 transition"
+                >
+                  {posting ? 'Posting...' : 'Post Comment'}
+                </button>
+              </div>
+            </form>
+          ) : (
+            <p className="text-gray-600 mb-6">
+              <Link href="/login" className="text-blue-600 font-bold hover:underline">
+                Log in
+              </Link>{' '}
+              to join the conversation.
+            </p>
+          )}
+
+          {comments.length === 0 ? (
+            <p className="text-gray-500">No comments yet. Be the first to comment.</p>
+          ) : (
+            <div className="space-y-4">
+              {comments.map((c: any) => {
+                const isAuthor = !!(currentUser && c.userId?._id === currentUser._id);
+                const canDelete = isAuthor || isSellerLoggedIn || isAdmin;
+                return (
+                  <div key={c._id} className="flex gap-3 py-3 border-b border-gray-100 last:border-b-0">
+                    <div className="w-10 h-10 flex-shrink-0 bg-gradient-to-br from-blue-600 to-blue-800 rounded-full flex items-center justify-center text-white font-bold">
+                      {c.userId?.fullName?.[0]?.toUpperCase() || 'U'}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="font-semibold text-black text-sm">
+                          {c.userId?.fullName || 'User'}
+                          {c.userId?._id === sellerId && (
+                            <span className="ml-2 text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full">Seller</span>
+                          )}
+                        </p>
+                        {canDelete && (
+                          <button
+                            onClick={() => handleDeleteComment(c._id)}
+                            className="text-xs text-red-600 hover:underline flex-shrink-0"
+                          >
+                            Delete
+                          </button>
+                        )}
+                      </div>
+                      <p className="text-gray-700 text-sm mt-1 break-words whitespace-pre-wrap">{c.content}</p>
+                      <p className="text-xs text-gray-500 mt-1">{new Date(c.createdAt).toLocaleString()}</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
