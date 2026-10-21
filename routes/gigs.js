@@ -4,7 +4,8 @@ const auth = require('../middleware/auth');
 
 const router = express.Router();
 
-const SELLER_FIELDS = 'fullName email phone';
+// Public responses never include email addresses or phone numbers
+const SELLER_FIELDS = 'fullName profileImage';
 
 const loadGig = (id) => Gig.findById(id).populate('sellerId', SELLER_FIELDS);
 

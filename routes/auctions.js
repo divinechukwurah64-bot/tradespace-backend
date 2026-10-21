@@ -1,20 +1,31 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
+const { RoomServiceClient } = require('livekit-server-sdk');
 const Auction = require('../models/Auction');
+const User = require('../models/User');
 const Like = require('../models/Like');
 const Comment = require('../models/Comment');
+const Review = require('../models/Review');
 const auth = require('../middleware/auth');
 
 const router = express.Router();
 
-const SELLER_FIELDS = 'fullName email phone';
-const BIDDER_FIELDS = 'fullName email';
+// Public responses never include email addresses or phone numbers
+const SELLER_FIELDS = 'fullName profileImage';
+const BIDDER_FIELDS = 'fullName';
+
+const MAX_REOPENS = 3;
+const AUCTION_LENGTH_MS = 24 * 60 * 60 * 1000;
 
 const loadAuction = (id) =>
   Auction.findById(id)
     .populate('sellerId', SELLER_FIELDS)
-    .populate('bids.bidderId', BIDDER_FIELDS);
+    .populate('bids.bidderId', BIDDER_FIELDS)
+    .populate('winnerId', BIDDER_FIELDS);
+
+// Works whether the value is a plain id or a populated document
+const idOf = (value) => (value ? String(value._id || value) : null);
 
 // Reads the user id from the token if there is one, without requiring a login
 const optionalUserId = (req) => {
@@ -25,6 +36,49 @@ const optionalUserId = (req) => {
   } catch (err) {
     return null;
   }
+};
+
+// Closes the live stream room when an auction is sold
+const closeLiveRoom = async (auctionId) => {
+  if (!process.env.LIVEKIT_URL || !process.env.LIVEKIT_API_KEY || !process.env.LIVEKIT_API_SECRET) return;
+  try {
+    const url = process.env.LIVEKIT_URL.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
+    const service = new RoomServiceClient(url, process.env.LIVEKIT_API_KEY, process.env.LIVEKIT_API_SECRET);
+    await service.deleteRoom(`auction-${auctionId}`);
+  } catch (e) {
+    console.log('closeLiveRoom note:', e.message);
+  }
+};
+
+// What the person asking is allowed to know about this auction.
+// Contact details are only shared between the seller and the winning bidder after a sale.
+const buildViewer = async (auction, userId) => {
+  const viewer = { role: null, contact: null, hasReviewed: false };
+  if (!userId) return viewer;
+
+  const sellerId = idOf(auction.sellerId);
+  const winnerId = idOf(auction.winnerId);
+
+  if (userId === sellerId) viewer.role = 'seller';
+  else if (winnerId && userId === winnerId) viewer.role = 'winner';
+
+  if (auction.status === 'sold' && viewer.role) {
+    const otherId = viewer.role === 'seller' ? winnerId : sellerId;
+    const other = otherId ? await User.findById(otherId).select('fullName email phone') : null;
+    if (other) {
+      viewer.contact = {
+        fullName: other.fullName,
+        email: other.email,
+        phone: other.phone || null
+      };
+    }
+  }
+
+  if (viewer.role === 'winner') {
+    viewer.hasReviewed = !!(await Review.exists({ auctionId: auction._id, reviewerId: userId }));
+  }
+
+  return viewer;
 };
 
 // GET ALL AUCTIONS
@@ -179,16 +233,20 @@ router.delete('/:id/comments/:commentId', auth, async (req, res) => {
 // GET SINGLE AUCTION
 router.get('/:id', async (req, res) => {
   try {
-    const auction = await Auction.findById(req.params.id)
-      .populate('sellerId', SELLER_FIELDS)
-      .populate('bids.bidderId', BIDDER_FIELDS)
-      .populate('winnerId', BIDDER_FIELDS);
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(404).json({ error: 'Auction not found' });
+    }
+
+    const auction = await loadAuction(req.params.id);
 
     if (!auction) {
       return res.status(404).json({ error: 'Auction not found' });
     }
 
-    res.json(auction);
+    const result = auction.toObject();
+    result.viewer = await buildViewer(auction, optionalUserId(req));
+
+    res.json(result);
   } catch (err) {
     console.error('GET /auctions/:id error:', err);
     res.status(500).json({ error: err.message });
@@ -217,7 +275,7 @@ router.post('/', auth, async (req, res) => {
       startingBid,
       currentBid: null,
       images: images || [],
-      endsAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      endsAt: new Date(Date.now() + AUCTION_LENGTH_MS),
       status: 'active',
     });
 
@@ -243,7 +301,7 @@ router.post('/:id/bids', auth, async (req, res) => {
     }
 
     const now = new Date();
-    if (now > new Date(auction.endsAt)) {
+    if (auction.status !== 'active' || now > new Date(auction.endsAt)) {
       return res.status(400).json({ error: 'Auction has ended' });
     }
 
@@ -276,6 +334,159 @@ router.post('/:id/bids', auth, async (req, res) => {
     res.json(populatedAuction);
   } catch (err) {
     console.error('POST /auctions/:id/bids error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ACCEPT A BID - Only the seller. Ends the auction and the bidder wins.
+router.post('/:id/bids/:bidId/accept', auth, async (req, res) => {
+  try {
+    const { id, bidId } = req.params;
+    if (!mongoose.isValidObjectId(id) || !mongoose.isValidObjectId(bidId)) {
+      return res.status(400).json({ error: 'Invalid request' });
+    }
+
+    const auction = await Auction.findById(id);
+    if (!auction) {
+      return res.status(404).json({ error: 'Auction not found' });
+    }
+
+    if (auction.sellerId.toString() !== req.user.userId) {
+      return res.status(403).json({ error: 'Only the seller can accept a bid' });
+    }
+
+    if (auction.status === 'sold') {
+      return res.status(400).json({ error: 'This auction has already been sold' });
+    }
+
+    if (auction.status !== 'active') {
+      return res.status(400).json({ error: 'This auction is closed and cannot accept bids' });
+    }
+
+    const bid = auction.bids.id(bidId);
+    if (!bid || !bid.bidderId) {
+      return res.status(404).json({ error: 'Bid not found' });
+    }
+
+    auction.status = 'sold';
+    auction.winnerId = bid.bidderId;
+    auction.winningBid = bid.amount;
+    auction.currentBid = bid.amount;
+    auction.soldAt = new Date();
+    auction.endsAt = new Date();
+    auction.isLive = false;
+    auction.liveStartedAt = null;
+
+    await auction.save();
+
+    closeLiveRoom(auction._id);
+
+    const populatedAuction = await loadAuction(auction._id);
+    res.json(populatedAuction);
+  } catch (err) {
+    console.error('POST /auctions/:id/bids/:bidId/accept error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// REOPEN AN EXPIRED AUCTION - Only the seller, up to 3 times
+router.post('/:id/reopen', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ error: 'Invalid auction' });
+    }
+
+    const auction = await Auction.findById(id);
+    if (!auction) {
+      return res.status(404).json({ error: 'Auction not found' });
+    }
+
+    if (auction.sellerId.toString() !== req.user.userId) {
+      return res.status(403).json({ error: 'Only the seller can reopen this auction' });
+    }
+
+    if (auction.status === 'sold') {
+      return res.status(400).json({ error: 'A sold auction cannot be reopened' });
+    }
+
+    // Only auctions that ran out of time. Auctions closed by an admin stay closed.
+    if (auction.status !== 'active') {
+      return res.status(400).json({ error: 'This auction cannot be reopened' });
+    }
+
+    if (new Date() <= new Date(auction.endsAt)) {
+      return res.status(400).json({ error: 'This auction is still running' });
+    }
+
+    if ((auction.reopenCount || 0) >= MAX_REOPENS) {
+      return res.status(400).json({ error: `You can only reopen an auction ${MAX_REOPENS} times` });
+    }
+
+    auction.endsAt = new Date(Date.now() + AUCTION_LENGTH_MS);
+    auction.reopenCount = (auction.reopenCount || 0) + 1;
+    auction.isLive = false;
+    auction.liveStartedAt = null;
+
+    await auction.save();
+
+    const populatedAuction = await loadAuction(auction._id);
+    res.json(populatedAuction);
+  } catch (err) {
+    console.error('POST /auctions/:id/reopen error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// RATE THE SELLER - Only the winning buyer, once per sale
+router.post('/:id/review', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ error: 'Invalid auction' });
+    }
+
+    const rating = Number(req.body.rating);
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+      return res.status(400).json({ error: 'Rating must be a whole number from 1 to 5' });
+    }
+
+    const comment = typeof req.body.comment === 'string' ? req.body.comment.trim() : '';
+    if (comment.length > 500) {
+      return res.status(400).json({ error: 'Review cannot be longer than 500 characters' });
+    }
+
+    const auction = await Auction.findById(id);
+    if (!auction) {
+      return res.status(404).json({ error: 'Auction not found' });
+    }
+
+    if (
+      auction.status !== 'sold' ||
+      !auction.winnerId ||
+      auction.winnerId.toString() !== req.user.userId
+    ) {
+      return res.status(403).json({ error: 'Only the winning buyer can review the seller' });
+    }
+
+    try {
+      await Review.create({
+        auctionId: auction._id,
+        sellerId: auction.sellerId,
+        reviewerId: req.user.userId,
+        rating,
+        comment
+      });
+    } catch (e) {
+      if (e.code === 11000) {
+        return res.status(400).json({ error: 'You have already reviewed this sale' });
+      }
+      throw e;
+    }
+
+    res.status(201).json({ message: 'Thanks for your review' });
+  } catch (err) {
+    console.error('POST /auctions/:id/review error:', err);
     res.status(500).json({ error: err.message });
   }
 });

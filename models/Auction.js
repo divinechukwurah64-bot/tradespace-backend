@@ -20,6 +20,8 @@ const auctionSchema = new mongoose.Schema({
   status: { type: String, enum: ['active', 'ended', 'sold'], default: 'active' },
   winnerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   winningBid: { type: Number, default: null },
+  soldAt: { type: Date, default: null },
+  reopenCount: { type: Number, default: 0 },
   shippingCost: { type: Number, default: 0 },
   location: { type: String, default: 'Nigeria' },
   isLive: { type: Boolean, default: false },
