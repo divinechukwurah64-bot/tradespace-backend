@@ -19,6 +19,8 @@ const userSchema = new mongoose.Schema({
   role: { type: String, enum: ['user', 'admin'], default: 'user' },
   isBanned: { type: Boolean, default: false },
   acceptedTermsAt: { type: Date, default: null },
+  passwordResetTokenHash: { type: String, default: null, select: false },
+  passwordResetExpires: { type: Date, default: null, select: false },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
