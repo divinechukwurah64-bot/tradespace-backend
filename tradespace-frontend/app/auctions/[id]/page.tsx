@@ -3,8 +3,10 @@
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Clock, User, ArrowLeft, Heart, Share2, Trash2 } from 'lucide-react';
+import { Clock, User, ArrowLeft, Heart, Share2, Trash2, Star } from 'lucide-react';
 import API from '@/lib/api';
+
+const MAX_REOPENS = 3;
 
 export default function AuctionDetail() {
   const params = useParams();
@@ -30,6 +32,12 @@ export default function AuctionDetail() {
   const [posting, setPosting] = useState(false);
   const [copied, setCopied] = useState(false);
 
+  const [sellerStats, setSellerStats] = useState<any>(null);
+  const [reviewRating, setReviewRating] = useState(5);
+  const [reviewComment, setReviewComment] = useState('');
+  const [reviewError, setReviewError] = useState('');
+  const [reviewing, setReviewing] = useState(false);
+
   const fetchAuctionData = async () => {
     try {
       const response = await API.get(`/auctions/${auctionId}`);
@@ -48,6 +56,15 @@ export default function AuctionDetail() {
       setComments(response.data.comments);
     } catch (err) {
       console.error('Failed to fetch likes and comments');
+    }
+  };
+
+  const loadSellerStats = async (sid: string) => {
+    try {
+      const response = await API.get(`/users/${sid}`);
+      setSellerStats(response.data.stats);
+    } catch (err) {
+      console.error('Failed to load seller stats');
     }
   };
 
@@ -77,6 +94,13 @@ export default function AuctionDetail() {
     fetchSocial();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auctionId]);
+
+  // Load the seller's real rating and sales once we know who the seller is
+  const sellerIdForStats = auction?.sellerId?._id;
+  useEffect(() => {
+    if (sellerIdForStats) loadSellerStats(sellerIdForStats);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sellerIdForStats]);
 
   useEffect(() => {
     if (!auction?.endsAt) return;
@@ -134,6 +158,52 @@ export default function AuctionDetail() {
       setBidError(err.response?.data?.error || 'Failed to place bid');
     } finally {
       setBidLoading(false);
+    }
+  };
+
+  const handleAcceptBid = async (bid: any) => {
+    const name = bid.bidderId?.fullName || 'this bidder';
+    const amount = Number(bid.amount).toLocaleString();
+    if (!window.confirm(`Accept the bid of ₦${amount} from ${name}? This ends the auction and they win it.`)) return;
+
+    try {
+      setError('');
+      await API.post(`/auctions/${auctionId}/bids/${bid._id}/accept`);
+      await fetchAuctionData();
+    } catch (err: any) {
+      setError(err.response?.data?.error || 'Could not accept this bid');
+    }
+  };
+
+  const handleReopen = async () => {
+    if (!window.confirm('Reopen this auction for another 24 hours?')) return;
+
+    try {
+      setError('');
+      await API.post(`/auctions/${auctionId}/reopen`);
+      await fetchAuctionData();
+    } catch (err: any) {
+      setError(err.response?.data?.error || 'Could not reopen this auction');
+    }
+  };
+
+  const handleSubmitReview = async (e: any) => {
+    e.preventDefault();
+    setReviewError('');
+    setReviewing(true);
+
+    try {
+      await API.post(`/auctions/${auctionId}/review`, {
+        rating: reviewRating,
+        comment: reviewComment,
+      });
+      setReviewComment('');
+      await fetchAuctionData();
+      if (auction?.sellerId?._id) await loadSellerStats(auction.sellerId._id);
+    } catch (err: any) {
+      setReviewError(err.response?.data?.error || 'Could not submit your review');
+    } finally {
+      setReviewing(false);
     }
   };
 
@@ -228,6 +298,10 @@ export default function AuctionDetail() {
   const sellerId = auction?.sellerId?._id;
   const isSellerLoggedIn = !!(currentUser && sellerId && currentUser._id === sellerId);
   const isAdmin = currentUser?.role === 'admin';
+  const isSold = auction.status === 'sold';
+  const isExpired = timeLeft === 'Auction Ended';
+  const viewer = auction.viewer || {};
+  const reopensLeft = Math.max(0, MAX_REOPENS - (auction.reopenCount || 0));
   const images = auction.images && auction.images.length > 0
     ? auction.images
     : ['https://via.placeholder.com/500x500?text=No+Image'];
@@ -257,6 +331,11 @@ export default function AuctionDetail() {
               {auction.isLive && (
                 <span className="absolute top-3 left-3 z-10 bg-red-600 text-white text-xs font-bold px-3 py-1 rounded-full">
                   LIVE
+                </span>
+              )}
+              {isSold && (
+                <span className="absolute top-3 right-3 z-10 bg-green-600 text-white text-xs font-bold px-3 py-1 rounded-full">
+                  SOLD
                 </span>
               )}
               <img
@@ -303,39 +382,64 @@ export default function AuctionDetail() {
                 <User className="w-5 h-5" />
                 Seller Information
               </h3>
-              <div className="flex items-center gap-4 mb-4">
-                <div className="w-16 h-16 bg-gradient-to-br from-blue-600 to-blue-800 rounded-full flex items-center justify-center text-white text-2xl font-bold">
-                  {auction.sellerId?.fullName?.[0]?.toUpperCase() || 'S'}
-                </div>
-                <div>
-                  <p className="font-semibold text-black text-lg">{auction.sellerId?.fullName || 'Unknown Seller'}</p>
-                  <p className="text-sm text-gray-600">{auction.sellerId?.email || 'No email'}</p>
-                  <p className="text-sm text-gray-600">{auction.sellerId?.phone || 'No phone'}</p>
-                </div>
-              </div>
+
+              {sellerId ? (
+                <Link href={`/users/${sellerId}`} className="flex items-center gap-4 mb-4 group">
+                  {auction.sellerId?.profileImage ? (
+                    <img
+                      src={auction.sellerId.profileImage}
+                      alt={auction.sellerId.fullName}
+                      className="w-16 h-16 rounded-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-16 h-16 bg-gradient-to-br from-blue-600 to-blue-800 rounded-full flex items-center justify-center text-white text-2xl font-bold">
+                      {auction.sellerId?.fullName?.[0]?.toUpperCase() || 'S'}
+                    </div>
+                  )}
+                  <div>
+                    <p className="font-semibold text-black text-lg group-hover:text-blue-600">
+                      {auction.sellerId?.fullName || 'Unknown Seller'}
+                    </p>
+                    <p className="text-sm text-blue-600">View profile</p>
+                  </div>
+                </Link>
+              ) : (
+                <p className="text-gray-600 mb-4">Unknown Seller</p>
+              )}
 
               <div className="pt-4 border-t border-gray-200">
                 <p className="text-xs text-gray-600 mb-2">Seller Stats</p>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <p className="text-2xl font-bold text-black">⭐ 4.8</p>
-                    <p className="text-xs text-gray-600">Rating</p>
+                    <p className="text-2xl font-bold text-black flex items-center gap-1">
+                      {sellerStats && sellerStats.rating !== null ? (
+                        <>
+                          <Star className="w-5 h-5 text-yellow-500" fill="currentColor" />
+                          {sellerStats.rating}
+                        </>
+                      ) : (
+                        'New'
+                      )}
+                    </p>
+                    <p className="text-xs text-gray-600">
+                      {sellerStats ? `${sellerStats.ratingCount} ${sellerStats.ratingCount === 1 ? 'review' : 'reviews'}` : 'Rating'}
+                    </p>
                   </div>
                   <div>
-                    <p className="text-2xl font-bold text-black">127</p>
+                    <p className="text-2xl font-bold text-black">{sellerStats ? sellerStats.itemsSold : 0}</p>
                     <p className="text-xs text-gray-600">Items Sold</p>
                   </div>
                 </div>
               </div>
 
-              <button className="w-full mt-4 bg-blue-50 text-blue-600 py-2 rounded-lg hover:bg-blue-100 transition font-semibold">
-                Contact Seller
-              </button>
+              <p className="mt-4 text-xs text-gray-500 bg-gray-50 rounded-lg p-3">
+                For everyone's safety, the seller's contact details are private. They are shared with the winning bidder once the seller accepts a bid.
+              </p>
             </div>
           </div>
 
           <div>
-            {auction.isLive && !isSellerLoggedIn && (
+            {auction.isLive && !isSellerLoggedIn && !isSold && (
               <Link
                 href={`/live/${auctionId}`}
                 className="block bg-red-600 text-white rounded-lg p-4 mb-6 text-center font-bold hover:bg-red-700 transition"
@@ -344,7 +448,7 @@ export default function AuctionDetail() {
               </Link>
             )}
 
-            {isSellerLoggedIn && timeLeft !== 'Auction Ended' && auction.status === 'active' && (
+            {isSellerLoggedIn && !isExpired && auction.status === 'active' && (
               <Link
                 href={`/live/${auctionId}`}
                 className="block bg-red-600 text-white rounded-lg p-4 mb-6 text-center font-bold hover:bg-red-700 transition"
@@ -353,13 +457,113 @@ export default function AuctionDetail() {
               </Link>
             )}
 
-            <div className="bg-red-50 border-2 border-red-200 rounded-lg p-6 mb-6">
-              <div className="flex items-center gap-2 mb-2">
-                <Clock className="w-5 h-5 text-red-600" />
-                <p className="text-sm text-red-700 font-semibold">Time Left</p>
+            {isSold && (
+              <div className="bg-green-50 border-2 border-green-200 rounded-lg p-6 mb-6">
+                <p className="text-sm text-green-700 font-semibold mb-1">SOLD</p>
+                <p className="text-3xl font-bold text-green-700">₦{auction.winningBid?.toLocaleString()}</p>
+                {auction.winnerId?._id && (
+                  <p className="text-sm text-gray-700 mt-2">
+                    Winner:{' '}
+                    <Link href={`/users/${auction.winnerId._id}`} className="font-semibold text-blue-600 hover:underline">
+                      {auction.winnerId.fullName}
+                    </Link>
+                  </p>
+                )}
               </div>
-              <p className="text-3xl font-bold text-red-600">{timeLeft}</p>
-            </div>
+            )}
+
+            {isSold && viewer.contact && (
+              <div className="bg-white rounded-lg shadow p-6 mb-6">
+                <h3 className="font-bold text-black mb-3">
+                  {viewer.role === 'seller' ? 'Buyer contact details' : 'Seller contact details'}
+                </h3>
+                <p className="text-sm text-gray-600">Name</p>
+                <p className="font-semibold text-black mb-2">{viewer.contact.fullName}</p>
+                <p className="text-sm text-gray-600">Phone</p>
+                <p className="font-semibold text-black mb-2">{viewer.contact.phone || 'Not provided'}</p>
+                <p className="text-sm text-gray-600">Email</p>
+                <p className="font-semibold text-black break-all">{viewer.contact.email}</p>
+                <p className="text-xs text-gray-500 mt-3">Only you and the other person can see this.</p>
+              </div>
+            )}
+
+            {isSold && viewer.role === 'winner' && !viewer.hasReviewed && (
+              <form onSubmit={handleSubmitReview} className="bg-white rounded-lg shadow p-6 mb-6">
+                <h3 className="font-bold text-black mb-3">Rate the seller</h3>
+                {reviewError && (
+                  <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded mb-3 text-sm">
+                    {reviewError}
+                  </div>
+                )}
+                <div className="flex gap-1 mb-3">
+                  {[1, 2, 3, 4, 5].map((n) => (
+                    <button
+                      type="button"
+                      key={n}
+                      onClick={() => setReviewRating(n)}
+                      aria-label={`${n} stars`}
+                    >
+                      <Star
+                        className={`w-8 h-8 ${n <= reviewRating ? 'text-yellow-500' : 'text-gray-300'}`}
+                        fill={n <= reviewRating ? 'currentColor' : 'none'}
+                      />
+                    </button>
+                  ))}
+                </div>
+                <textarea
+                  value={reviewComment}
+                  onChange={(e) => setReviewComment(e.target.value)}
+                  placeholder="How was your experience? (optional)"
+                  rows={3}
+                  maxLength={500}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500 text-black bg-white"
+                />
+                <button
+                  type="submit"
+                  disabled={reviewing}
+                  className="w-full bg-blue-600 text-white py-2 rounded-lg font-bold hover:bg-blue-700 disabled:bg-gray-400 transition"
+                >
+                  {reviewing ? 'Submitting...' : 'Submit Review'}
+                </button>
+              </form>
+            )}
+
+            {isSold && viewer.role === 'winner' && viewer.hasReviewed && (
+              <div className="bg-white rounded-lg shadow p-6 mb-6">
+                <p className="text-gray-700 text-sm">Thanks. You have already reviewed this seller.</p>
+              </div>
+            )}
+
+            {!isSold && (
+              <div className="bg-red-50 border-2 border-red-200 rounded-lg p-6 mb-6">
+                <div className="flex items-center gap-2 mb-2">
+                  <Clock className="w-5 h-5 text-red-600" />
+                  <p className="text-sm text-red-700 font-semibold">Time Left</p>
+                </div>
+                <p className="text-3xl font-bold text-red-600">{timeLeft}</p>
+              </div>
+            )}
+
+            {isSellerLoggedIn && !isSold && isExpired && auction.status === 'active' && (
+              <div className="bg-white rounded-lg shadow p-6 mb-6">
+                <h3 className="font-bold text-black mb-2">This auction has expired</h3>
+                <p className="text-sm text-gray-600 mb-4">
+                  {auction.bids && auction.bids.length > 0
+                    ? 'You can accept one of the bids below, or reopen it for another 24 hours.'
+                    : 'Nobody bid. You can reopen it for another 24 hours.'}
+                </p>
+                {reopensLeft > 0 ? (
+                  <button
+                    onClick={handleReopen}
+                    className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700 transition"
+                  >
+                    Reopen Auction ({reopensLeft} of {MAX_REOPENS} left)
+                  </button>
+                ) : (
+                  <p className="text-sm text-gray-600">You have used all {MAX_REOPENS} reopens for this auction.</p>
+                )}
+              </div>
+            )}
 
             <div className="bg-white rounded-lg shadow p-6 mb-6">
               <p className="text-sm text-gray-600 mb-2">Starting Bid</p>
@@ -367,7 +571,7 @@ export default function AuctionDetail() {
 
               {auction.currentBid && (
                 <>
-                  <p className="text-sm text-gray-600 mb-2">Current Bid</p>
+                  <p className="text-sm text-gray-600 mb-2">{isSold ? 'Winning Bid' : 'Current Bid'}</p>
                   <p className="text-3xl font-bold text-blue-600 mb-4">₦{auction.currentBid?.toLocaleString()}</p>
                 </>
               )}
@@ -378,7 +582,7 @@ export default function AuctionDetail() {
               </div>
             </div>
 
-            {!isSellerLoggedIn && timeLeft !== 'Auction Ended' && (
+            {!isSellerLoggedIn && !isExpired && !isSold && auction.status === 'active' && (
               <form onSubmit={handlePlaceBid} className="bg-white rounded-lg shadow p-6 mb-6">
                 <h3 className="font-bold text-black mb-4">Place a Bid</h3>
                 {bidError && (
@@ -404,7 +608,7 @@ export default function AuctionDetail() {
               </form>
             )}
 
-            {isSellerLoggedIn && (
+            {isSellerLoggedIn && !isSold && (
               <button
                 onClick={handleDeleteAuction}
                 className="w-full bg-red-600 text-white py-3 rounded-lg font-bold hover:bg-red-700 transition flex items-center justify-center gap-2 mb-6"
@@ -414,12 +618,9 @@ export default function AuctionDetail() {
               </button>
             )}
 
-            {timeLeft === 'Auction Ended' && (
+            {isExpired && !isSold && !isSellerLoggedIn && (
               <div className="bg-gray-100 rounded-lg p-6 text-center mb-6">
                 <p className="text-gray-700 font-semibold">This auction has ended</p>
-                {auction.winnerId && (
-                  <p className="text-sm text-gray-600 mt-2">Winner: {auction.winnerId?.fullName}</p>
-                )}
               </div>
             )}
 
@@ -448,17 +649,52 @@ export default function AuctionDetail() {
           <div className="mt-8 bg-white rounded-lg shadow p-6">
             <h3 className="text-xl font-bold text-black mb-4">Bid History</h3>
             <div className="space-y-3">
-              {[...auction.bids].reverse().map((bid: any, idx: number) => (
-                <div key={idx} className="flex justify-between items-center py-3 border-b border-gray-200 last:border-b-0">
-                  <div>
-                    <p className="font-semibold text-black">{bid.bidderId?.fullName || 'Anonymous'}</p>
-                    <p className="text-sm text-gray-600">
-                      {new Date(bid.timestamp).toLocaleDateString()} at {new Date(bid.timestamp).toLocaleTimeString()}
-                    </p>
+              {[...auction.bids].reverse().map((bid: any, idx: number) => {
+                const isWinningBid =
+                  isSold &&
+                  bid.amount === auction.winningBid &&
+                  bid.bidderId?._id &&
+                  bid.bidderId._id === auction.winnerId?._id;
+
+                return (
+                  <div
+                    key={bid._id || idx}
+                    className="flex justify-between items-center gap-3 py-3 border-b border-gray-200 last:border-b-0"
+                  >
+                    <div className="min-w-0">
+                      {bid.bidderId?._id ? (
+                        <Link
+                          href={`/users/${bid.bidderId._id}`}
+                          className="font-semibold text-black hover:text-blue-600"
+                        >
+                          {bid.bidderId.fullName || 'Anonymous'}
+                        </Link>
+                      ) : (
+                        <p className="font-semibold text-black">Anonymous</p>
+                      )}
+                      {isWinningBid && (
+                        <span className="ml-2 text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
+                          Accepted
+                        </span>
+                      )}
+                      <p className="text-sm text-gray-600">
+                        {new Date(bid.timestamp).toLocaleDateString()} at {new Date(bid.timestamp).toLocaleTimeString()}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-3 flex-shrink-0">
+                      <p className="text-lg font-bold text-blue-600">₦{bid.amount?.toLocaleString()}</p>
+                      {isSellerLoggedIn && auction.status === 'active' && (
+                        <button
+                          onClick={() => handleAcceptBid(bid)}
+                          className="bg-green-600 text-white text-sm px-4 py-1.5 rounded-lg font-bold hover:bg-green-700 transition"
+                        >
+                          Accept
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  <p className="text-lg font-bold text-blue-600">₦{bid.amount?.toLocaleString()}</p>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
@@ -516,7 +752,13 @@ export default function AuctionDetail() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between gap-2">
                         <p className="font-semibold text-black text-sm">
-                          {c.userId?.fullName || 'User'}
+                          {c.userId?._id ? (
+                            <Link href={`/users/${c.userId._id}`} className="hover:text-blue-600">
+                              {c.userId.fullName || 'User'}
+                            </Link>
+                          ) : (
+                            'User'
+                          )}
                           {c.userId?._id === sellerId && (
                             <span className="ml-2 text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full">Seller</span>
                           )}
