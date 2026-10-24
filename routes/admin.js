@@ -11,6 +11,11 @@ const router = express.Router();
 // Every route in this file requires a logged-in admin
 router.use(auth, admin);
 
+// ARE YOU AN ADMIN? Only admins get a reply. Everyone else is refused above.
+router.get('/me', (req, res) => {
+  res.json({ role: 'admin' });
+});
+
 // DASHBOARD STATS
 router.get('/stats', async (req, res) => {
   try {

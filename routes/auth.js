@@ -193,9 +193,10 @@ router.post('/reset-password', async (req, res) => {
   }
 });
 
+// ME - the logged in person's own details. Admin status is never revealed here.
 router.get('/me', authMiddleware, async (req, res) => {
   try {
-    const user = await User.findById(req.user.userId).select('-password');
+    const user = await User.findById(req.user.userId).select('-password -role');
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
