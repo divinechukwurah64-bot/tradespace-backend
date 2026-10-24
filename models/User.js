@@ -18,6 +18,8 @@ const userSchema = new mongoose.Schema({
   bankAccountLast4: { type: String, default: null },
   bankCode: { type: String, default: null },
   paystackRecipientCode: { type: String, default: null, select: false },
+  paymentDefaults: { type: Number, default: 0 },
+  biddingBlocked: { type: Boolean, default: false },
   isVerified: { type: Boolean, default: false },
   role: { type: String, enum: ['user', 'admin'], default: 'user' },
   isBanned: { type: Boolean, default: false },

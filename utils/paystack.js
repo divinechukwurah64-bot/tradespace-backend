@@ -76,4 +76,38 @@ const createRecipient = async ({ name, accountNumber, bankCode }) => {
   return res.data.data.recipient_code;
 };
 
-module.exports = { isTestMode, isLookupFailure, listBanks, resolveAccount, createRecipient };
+// Starts a checkout. Returns { authorization_url, access_code, reference }
+const initializeTransaction = async ({ email, amountKobo, reference, callbackUrl, metadata }) => {
+  const res = await http().post('/transaction/initialize', {
+    email,
+    amount: amountKobo,
+    currency: 'NGN',
+    reference,
+    callback_url: callbackUrl,
+    metadata
+  });
+  return res.data.data;
+};
+
+// Asks Paystack what really happened to a payment
+const verifyTransaction = async (reference) => {
+  const res = await http().get(`/transaction/verify/${encodeURIComponent(reference)}`);
+  return res.data.data;
+};
+
+// Sends the money back to the buyer
+const refundTransaction = async (reference) => {
+  const res = await http().post('/refund', { transaction: reference });
+  return res.data.data;
+};
+
+module.exports = {
+  isTestMode,
+  isLookupFailure,
+  listBanks,
+  resolveAccount,
+  createRecipient,
+  initializeTransaction,
+  verifyTransaction,
+  refundTransaction
+};

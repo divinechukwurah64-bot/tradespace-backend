@@ -1,0 +1,8 @@
+[33mcommit c715085d2b04d7f879f23b58ffc8126ab1ec7a74[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m)[m
+Author: dallas <divinechukwurah64@gmail.com>
+Date:   Fri Oct 23 19:32:41 2026 +0100
+
+    payout account page
+
+ app/profile/payout/page.tsx | 238 [32m++++++++++++++++++++++++++++++++++++++++++++[m
+ 1 file changed, 238 insertions(+)

@@ -8,6 +8,8 @@ const Like = require('../models/Like');
 const Comment = require('../models/Comment');
 const Review = require('../models/Review');
 const auth = require('../middleware/auth');
+const notify = require('../utils/notify');
+const { PAYMENT_WINDOW_MS } = require('../utils/payments');
 
 const router = express.Router();
 
@@ -17,6 +19,8 @@ const BIDDER_FIELDS = 'fullName';
 
 const MAX_REOPENS = 3;
 const AUCTION_LENGTH_MS = 24 * 60 * 60 * 1000;
+
+const money = (n) => `₦${Number(n).toLocaleString()}`;
 
 const loadAuction = (id) =>
   Auction.findById(id)
@@ -51,7 +55,7 @@ const closeLiveRoom = async (auctionId) => {
 };
 
 // What the person asking is allowed to know about this auction.
-// Contact details are only shared between the seller and the winning bidder after a sale.
+// Contact details are only shared between the seller and the winning bidder once the sale is paid.
 const buildViewer = async (auction, userId) => {
   const viewer = { role: null, contact: null, hasReviewed: false };
   if (!userId) return viewer;
@@ -293,7 +297,7 @@ router.post('/', auth, async (req, res) => {
 // PLACE BID - Auth required
 router.post('/:id/bids', auth, async (req, res) => {
   try {
-    const { amount } = req.body;
+    const amount = Number(req.body.amount);
     const auction = await Auction.findById(req.params.id);
 
     if (!auction) {
@@ -305,7 +309,7 @@ router.post('/:id/bids', auth, async (req, res) => {
       return res.status(400).json({ error: 'Auction has ended' });
     }
 
-    if (!amount || amount < 1) {
+    if (!Number.isFinite(amount) || amount < 1) {
       return res.status(400).json({ error: 'Invalid bid amount' });
     }
 
@@ -320,6 +324,18 @@ router.post('/:id/bids', auth, async (req, res) => {
       return res.status(400).json({ error: 'You cannot bid on your own auction' });
     }
 
+    const bidder = await User.findById(req.user.userId).select('biddingBlocked');
+    if (bidder && bidder.biddingBlocked) {
+      return res.status(403).json({
+        error: 'You cannot bid because of unpaid wins. Please contact support.'
+      });
+    }
+
+    const previousTop = (auction.bids || []).reduce(
+      (top, b) => (!top || b.amount > top.amount ? b : top),
+      null
+    );
+
     auction.currentBid = amount;
     auction.bids.push({
       bidderId: req.user.userId,
@@ -328,6 +344,21 @@ router.post('/:id/bids', auth, async (req, res) => {
     });
 
     await auction.save();
+
+    if (previousTop && previousTop.bidderId && previousTop.bidderId.toString() !== req.user.userId) {
+      notify(previousTop.bidderId, {
+        type: 'bid',
+        title: 'You were outbid',
+        message: `Someone bid ${money(amount)} on "${auction.title}".`,
+        link: `/auctions/${auction._id}`
+      });
+    }
+    notify(auction.sellerId, {
+      type: 'bid',
+      title: 'New bid on your auction',
+      message: `${money(amount)} on "${auction.title}".`,
+      link: `/auctions/${auction._id}`
+    });
 
     const populatedAuction = await loadAuction(auction._id);
 
@@ -338,7 +369,7 @@ router.post('/:id/bids', auth, async (req, res) => {
   }
 });
 
-// ACCEPT A BID - Only the seller. Ends the auction and the bidder wins.
+// ACCEPT A BID - Only the seller. The bidder then has 3 days to pay.
 router.post('/:id/bids/:bidId/accept', auth, async (req, res) => {
   try {
     const { id, bidId } = req.params;
@@ -359,6 +390,10 @@ router.post('/:id/bids/:bidId/accept', auth, async (req, res) => {
       return res.status(400).json({ error: 'This auction has already been sold' });
     }
 
+    if (auction.status === 'awaiting_payment') {
+      return res.status(400).json({ error: 'A bid has already been accepted and is waiting for payment' });
+    }
+
     if (auction.status !== 'active') {
       return res.status(400).json({ error: 'This auction is closed and cannot accept bids' });
     }
@@ -368,11 +403,25 @@ router.post('/:id/bids/:bidId/accept', auth, async (req, res) => {
       return res.status(404).json({ error: 'Bid not found' });
     }
 
-    auction.status = 'sold';
+    if ((auction.defaultedBidderIds || []).some((d) => d.toString() === bid.bidderId.toString())) {
+      return res.status(400).json({ error: 'This bidder missed the payment deadline earlier' });
+    }
+
+    // We need to know where to send the money before a buyer is asked to pay
+    const seller = await User.findById(req.user.userId).select('+paystackRecipientCode');
+    if (!seller || !seller.paystackRecipientCode) {
+      return res.status(400).json({
+        error: 'Add your payout account before accepting a bid',
+        code: 'PAYOUT_REQUIRED'
+      });
+    }
+
+    auction.status = 'awaiting_payment';
     auction.winnerId = bid.bidderId;
     auction.winningBid = bid.amount;
     auction.currentBid = bid.amount;
-    auction.soldAt = new Date();
+    auction.paymentDueAt = new Date(Date.now() + PAYMENT_WINDOW_MS);
+    auction.paymentReminderSent = false;
     auction.endsAt = new Date();
     auction.isLive = false;
     auction.liveStartedAt = null;
@@ -380,6 +429,19 @@ router.post('/:id/bids/:bidId/accept', auth, async (req, res) => {
     await auction.save();
 
     closeLiveRoom(auction._id);
+
+    notify(bid.bidderId, {
+      type: 'payment',
+      title: 'You won an auction',
+      message: `The seller accepted your ${money(bid.amount)} bid on "${auction.title}". Pay within 3 days.`,
+      link: `/auctions/${auction._id}`
+    });
+    notify(auction.sellerId, {
+      type: 'payment',
+      title: 'Bid accepted',
+      message: `Waiting for the buyer to pay ${money(bid.amount)} for "${auction.title}". They have 3 days.`,
+      link: `/auctions/${auction._id}`
+    });
 
     const populatedAuction = await loadAuction(auction._id);
     res.json(populatedAuction);
@@ -438,7 +500,7 @@ router.post('/:id/reopen', auth, async (req, res) => {
   }
 });
 
-// RATE THE SELLER - Only the winning buyer, once per sale
+// RATE THE SELLER - Only the winning buyer, once per sale, after the sale is paid
 router.post('/:id/review', auth, async (req, res) => {
   try {
     const { id } = req.params;

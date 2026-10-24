@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Clock, User, ArrowLeft, Heart, Share2, Trash2, Star } from 'lucide-react';
 import API from '@/lib/api';
+import { confirmDialog, toast } from '@/lib/dialogs';
 
 const MAX_REOPENS = 3;
 
@@ -30,7 +31,6 @@ export default function AuctionDetail() {
   const [commentText, setCommentText] = useState('');
   const [commentError, setCommentError] = useState('');
   const [posting, setPosting] = useState(false);
-  const [copied, setCopied] = useState(false);
 
   const [sellerStats, setSellerStats] = useState<any>(null);
   const [reviewRating, setReviewRating] = useState(5);
@@ -153,6 +153,7 @@ export default function AuctionDetail() {
         amount: Number(bidAmount),
       });
       setBidAmount('');
+      toast.success('Your bid was placed');
       await fetchAuctionData();
     } catch (err: any) {
       setBidError(err.response?.data?.error || 'Failed to place bid');
@@ -164,26 +165,39 @@ export default function AuctionDetail() {
   const handleAcceptBid = async (bid: any) => {
     const name = bid.bidderId?.fullName || 'this bidder';
     const amount = Number(bid.amount).toLocaleString();
-    if (!window.confirm(`Accept the bid of ₦${amount} from ${name}? This ends the auction and they win it.`)) return;
+
+    const ok = await confirmDialog({
+      title: 'Accept this bid?',
+      message: `Accept the bid of ₦${amount} from ${name}? This ends the auction and they win it.`,
+      confirmText: 'Accept bid',
+    });
+    if (!ok) return;
 
     try {
       setError('');
       await API.post(`/auctions/${auctionId}/bids/${bid._id}/accept`);
+      toast.success('Bid accepted. The auction is now sold.');
       await fetchAuctionData();
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Could not accept this bid');
+      toast.error(err.response?.data?.error || 'Could not accept this bid');
     }
   };
 
   const handleReopen = async () => {
-    if (!window.confirm('Reopen this auction for another 24 hours?')) return;
+    const ok = await confirmDialog({
+      title: 'Reopen this auction?',
+      message: 'It will run for another 24 hours.',
+      confirmText: 'Reopen',
+    });
+    if (!ok) return;
 
     try {
       setError('');
       await API.post(`/auctions/${auctionId}/reopen`);
+      toast.success('Auction reopened for 24 hours');
       await fetchAuctionData();
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Could not reopen this auction');
+      toast.error(err.response?.data?.error || 'Could not reopen this auction');
     }
   };
 
@@ -198,6 +212,7 @@ export default function AuctionDetail() {
         comment: reviewComment,
       });
       setReviewComment('');
+      toast.success('Thanks for your review');
       await fetchAuctionData();
       if (auction?.sellerId?._id) await loadSellerStats(auction.sellerId._id);
     } catch (err: any) {
@@ -208,13 +223,20 @@ export default function AuctionDetail() {
   };
 
   const handleDeleteAuction = async () => {
-    if (!window.confirm('Are you sure you want to delete this auction?')) return;
+    const ok = await confirmDialog({
+      title: 'Delete this auction?',
+      message: 'This cannot be undone.',
+      confirmText: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
 
     try {
       await API.delete(`/auctions/${auctionId}`);
+      toast.success('Auction deleted');
       router.push('/auctions');
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Failed to delete auction');
+      toast.error(err.response?.data?.error || 'Failed to delete auction');
     }
   };
 
@@ -228,17 +250,16 @@ export default function AuctionDetail() {
       setLiked(response.data.liked);
       setLikeCount(response.data.likeCount);
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Could not update your like');
+      toast.error(err.response?.data?.error || 'Could not update your like');
     }
   };
 
   const handleShare = async () => {
     try {
       await navigator.clipboard.writeText(window.location.href);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      toast.success('Link copied');
     } catch (err) {
-      setError('Could not copy the link');
+      toast.error('Could not copy the link');
     }
   };
 
@@ -262,12 +283,19 @@ export default function AuctionDetail() {
   };
 
   const handleDeleteComment = async (commentId: string) => {
-    if (!window.confirm('Delete this comment?')) return;
+    const ok = await confirmDialog({
+      title: 'Delete this comment?',
+      message: 'This cannot be undone.',
+      confirmText: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
+
     try {
       await API.delete(`/auctions/${auctionId}/comments/${commentId}`);
       await fetchSocial();
     } catch (err: any) {
-      setCommentError(err.response?.data?.error || 'Could not delete the comment');
+      toast.error(err.response?.data?.error || 'Could not delete the comment');
     }
   };
 
@@ -639,7 +667,6 @@ export default function AuctionDetail() {
                 className="flex-1 flex items-center justify-center gap-2 bg-white border border-gray-300 text-gray-700 py-2 rounded-lg hover:bg-gray-50 transition"
               >
                 <Share2 className="w-5 h-5" />
-                {copied && <span className="font-semibold text-sm">Link copied</span>}
               </button>
             </div>
           </div>

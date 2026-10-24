@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Camera, Star } from 'lucide-react';
 import API from '@/lib/api';
+import { confirmDialog, toast } from '@/lib/dialogs';
 
 const Stars = ({ value, size = 'w-4 h-4' }: { value: number; size?: string }) => (
   <div className="flex">
@@ -25,7 +26,6 @@ export default function MyProfile() {
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
 
   const load = async () => {
     try {
@@ -92,14 +92,12 @@ export default function MyProfile() {
 
   const handleSave = async (e: any) => {
     e.preventDefault();
-    setError('');
-    setMessage('');
     setSaving(true);
     try {
       await savePatch(form);
-      setMessage('Profile saved');
+      toast.success('Profile saved');
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Could not save your profile');
+      toast.error(err.response?.data?.error || 'Could not save your profile');
     } finally {
       setSaving(false);
     }
@@ -110,15 +108,12 @@ export default function MyProfile() {
     e.target.value = '';
     if (!file) return;
 
-    setError('');
-    setMessage('');
-
     if (!file.type.startsWith('image/')) {
-      setError('Please choose an image file');
+      toast.error('Please choose an image file');
       return;
     }
     if (file.size > 5 * 1024 * 1024) {
-      setError('The image must be smaller than 5MB');
+      toast.error('The image must be smaller than 5MB');
       return;
     }
 
@@ -135,23 +130,28 @@ export default function MyProfile() {
       }
 
       await savePatch({ profileImage: data.data.url });
-      setMessage('Profile picture updated');
+      toast.success('Profile picture updated');
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Could not upload your picture. Please try again.');
+      toast.error(err.response?.data?.error || 'Could not upload your picture. Please try again.');
     } finally {
       setUploading(false);
     }
   };
 
   const handleRemovePhoto = async () => {
-    if (!window.confirm('Remove your profile picture?')) return;
-    setError('');
-    setMessage('');
+    const ok = await confirmDialog({
+      title: 'Remove your picture?',
+      message: 'Your profile will show your initial instead.',
+      confirmText: 'Remove',
+      danger: true,
+    });
+    if (!ok) return;
+
     try {
       await savePatch({ profileImage: null });
-      setMessage('Profile picture removed');
+      toast.success('Profile picture removed');
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Could not remove your picture');
+      toast.error(err.response?.data?.error || 'Could not remove your picture');
     }
   };
 
@@ -217,6 +217,9 @@ export default function MyProfile() {
                 <Link href={`/users/${me._id}`} className="text-blue-600 hover:underline">
                   View my public profile
                 </Link>
+                <Link href="/profile/payout" className="text-blue-600 hover:underline">
+                  Payout account
+                </Link>
                 {me.profileImage && (
                   <button onClick={handleRemovePhoto} className="text-red-600 hover:underline">
                     Remove picture
@@ -238,11 +241,6 @@ export default function MyProfile() {
         {error && (
           <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-6 text-sm">
             {error}
-          </div>
-        )}
-        {message && (
-          <div className="bg-green-50 border border-green-200 text-green-800 px-4 py-3 rounded-lg mb-6 text-sm">
-            {message}
           </div>
         )}
 

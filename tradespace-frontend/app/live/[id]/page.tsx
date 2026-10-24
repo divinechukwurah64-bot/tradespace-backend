@@ -7,6 +7,7 @@ import { ArrowLeft } from 'lucide-react';
 import { Room, RoomEvent, Track } from 'livekit-client';
 import type { RemoteTrack } from 'livekit-client';
 import API from '@/lib/api';
+import { confirmDialog, toast } from '@/lib/dialogs';
 
 type Status = 'idle' | 'connecting' | 'live' | 'ended';
 
@@ -147,6 +148,7 @@ export default function LivePage() {
       setHasVideo(true);
       setViewerCount(room.remoteParticipants.size);
       setStatus('live');
+      toast.success('You are live');
       loadAuction();
     } catch (err: any) {
       if (handleAuthError(err)) return;
@@ -169,18 +171,26 @@ export default function LivePage() {
   };
 
   const endStream = async () => {
-    if (!window.confirm('End the live stream?')) return;
+    const ok = await confirmDialog({
+      title: 'End the live stream?',
+      message: 'Everyone watching will be disconnected.',
+      confirmText: 'End stream',
+      danger: true,
+    });
+    if (!ok) return;
+
     try {
       await API.post(`/live/${id}/end`);
     } catch (err: any) {
       if (handleAuthError(err)) return;
-      setError(err.response?.data?.error || 'Could not end the stream');
+      toast.error(err.response?.data?.error || 'Could not end the stream');
       return;
     }
     roomRef.current?.disconnect();
     roomRef.current = null;
     setStatus('ended');
     setHasVideo(false);
+    toast.success('Stream ended');
     loadAuction();
   };
 
@@ -227,6 +237,7 @@ export default function LivePage() {
     try {
       await API.post(`/auctions/${id}/bids`, { amount });
       setBidAmount('');
+      toast.success('Your bid was placed');
       await loadAuction();
     } catch (err: any) {
       if (handleAuthError(err)) return;

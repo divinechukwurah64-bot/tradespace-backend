@@ -3,14 +3,74 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const http = require('http');
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const socketIO = require('socket.io');
 const User = require('./models/User');
+const ErrorLog = require('./models/ErrorLog');
+const { startPaymentJobs } = require('./utils/payments');
 
 dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
+
+// ---------- Error logging ----------
+
+const GENERIC_MESSAGE =
+  'Sorry, something went wrong on our side. Please try again later or contact support.';
+
+const makeReference = () => crypto.randomBytes(3).toString('hex').toUpperCase();
+
+const friendlyMessage = (reference) => `${GENERIC_MESSAGE} (Ref: ${reference})`;
+
+// Saves the real error for you. Never logs request bodies, so passwords are not stored.
+const logError = async ({ reference, message, stack, req, statusCode, source }) => {
+  console.error(
+    `[ERROR ${reference}] ${source || 'api'}`,
+    req ? `${req.method} ${req.originalUrl}` : '',
+    message
+  );
+  if (stack) console.error(stack);
+
+  try {
+    await ErrorLog.create({
+      reference,
+      message: String(message || 'Unknown error').slice(0, 1000),
+      stack: stack ? String(stack).slice(0, 4000) : null,
+      method: req ? req.method : null,
+      path: req ? req.originalUrl : null,
+      statusCode: statusCode || null,
+      userId: req && req.user ? req.user.userId : null,
+      ip: req ? req.ip : null,
+      source: source || 'api'
+    });
+  } catch (e) {
+    console.error('Could not save error log:', e.message);
+  }
+};
+
+process.on('unhandledRejection', (reason) => {
+  logError({
+    reference: makeReference(),
+    message: reason && reason.message ? reason.message : String(reason),
+    stack: reason && reason.stack,
+    source: 'process'
+  });
+});
+
+process.on('uncaughtException', (err) => {
+  logError({
+    reference: makeReference(),
+    message: err.message,
+    stack: err.stack,
+    source: 'process'
+  });
+  // The process is in an unknown state, so exit and let Railway restart it
+  setTimeout(() => process.exit(1), 2000);
+});
+
+// ---------- CORS ----------
 
 // FRONTEND_URL can hold one or more origins, comma separated:
 // https://your-app.vercel.app,https://yourdomain.com
@@ -56,14 +116,47 @@ const io = socketIO(server, {
 
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
-app.use(express.json());
+
+// The raw body is kept so the Paystack webhook signature can be checked
+app.use(
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    }
+  })
+);
 app.use(express.urlencoded({ extended: true }));
+
+// Any response with a 5xx status is logged for you and replaced with a friendly message
+app.use((req, res, next) => {
+  const originalJson = res.json.bind(res);
+
+  res.json = (body) => {
+    if (res.statusCode >= 500 && body && typeof body === 'object' && !body.reference) {
+      const reference = makeReference();
+      logError({
+        reference,
+        message: body.error || 'Unknown server error',
+        req,
+        statusCode: res.statusCode,
+        source: 'api'
+      });
+      return originalJson({ error: friendlyMessage(reference), reference });
+    }
+    return originalJson(body);
+  };
+
+  next();
+});
 
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true
 })
-.then(() => console.log('MongoDB connected'))
+.then(() => {
+  console.log('MongoDB connected');
+  startPaymentJobs();
+})
 .catch(err => console.log('MongoDB connection error:', err));
 
 app.get('/health', (req, res) => {
@@ -78,6 +171,8 @@ app.use('/api/messages', require('./routes/messages'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/live', require('./routes/live'));
 app.use('/api/users', require('./routes/users'));
+app.use('/api/payments', require('./routes/payments'));
+app.use('/api/notifications', require('./routes/notifications'));
 
 // Identify the user on connect. Visitors without a valid token still connect,
 // but as anonymous: they can watch auctions and never join a user room.
@@ -123,10 +218,25 @@ io.on('connection', (socket) => {
 
 app.set('io', io);
 
+// Catches errors thrown outside the route try/catch blocks (bad JSON, middleware crashes)
 app.use((err, req, res, next) => {
-  console.error(err);
-  res.status(err.status || 500).json({
-    error: err.message || 'Internal server error'
+  const status = err.status || err.statusCode || 500;
+
+  if (status >= 500) {
+    const reference = makeReference();
+    logError({
+      reference,
+      message: err.message,
+      stack: err.stack,
+      req,
+      statusCode: status,
+      source: 'api'
+    });
+    return res.status(status).json({ error: friendlyMessage(reference), reference });
+  }
+
+  res.status(status).json({
+    error: status === 400 ? 'Invalid request' : 'Your request could not be completed'
   });
 });
 
