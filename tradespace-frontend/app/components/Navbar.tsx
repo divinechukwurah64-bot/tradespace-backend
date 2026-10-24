@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { Menu, X, LogOut, User } from 'lucide-react';
 import DialogHost from './DialogHost';
+import NotificationBell from './NotificationBell';
 
 export default function Navbar() {
   const [isOpen, setIsOpen] = useState(false);
@@ -53,48 +54,52 @@ export default function Navbar() {
             </div>
 
             {/* Right Side */}
-            <div className="hidden md:flex items-center gap-4">
-              {user ? (
-                <div className="flex items-center gap-4">
-                  <Link href="/profile" className="flex items-center gap-2 text-gray-700 hover:text-blue-600">
-                    {user.profileImage ? (
-                      <img
-                        src={user.profileImage}
-                        alt={user.fullName}
-                        className="w-7 h-7 rounded-full object-cover"
-                      />
-                    ) : (
-                      <User className="w-5 h-5" />
-                    )}
-                    <span className="font-medium text-sm">{user.fullName}</span>
-                  </Link>
-                  <button
-                    onClick={handleLogout}
-                    className="flex items-center gap-2 text-red-600 hover:text-red-700 font-medium text-sm"
-                  >
-                    <LogOut className="w-5 h-5" />
-                    Logout
-                  </button>
-                </div>
-              ) : (
-                <>
-                  <Link href="/login" className="text-gray-700 hover:text-blue-600 font-medium text-sm">
-                    Sign In
-                  </Link>
-                  <Link href="/register" className="bg-blue-600 text-white px-4 md:px-6 py-2 rounded-lg hover:bg-blue-700 font-medium text-sm">
-                    Join
-                  </Link>
-                </>
-              )}
-            </div>
+            <div className="flex items-center gap-3">
+              {user && <NotificationBell />}
 
-            {/* Mobile Menu Button */}
-            <button
-              onClick={() => setIsOpen(!isOpen)}
-              className="md:hidden text-gray-700"
-            >
-              {isOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
-            </button>
+              <div className="hidden md:flex items-center gap-4">
+                {user ? (
+                  <div className="flex items-center gap-4">
+                    <Link href="/profile" className="flex items-center gap-2 text-gray-700 hover:text-blue-600">
+                      {user.profileImage ? (
+                        <img
+                          src={user.profileImage}
+                          alt={user.fullName}
+                          className="w-7 h-7 rounded-full object-cover"
+                        />
+                      ) : (
+                        <User className="w-5 h-5" />
+                      )}
+                      <span className="font-medium text-sm">{user.fullName}</span>
+                    </Link>
+                    <button
+                      onClick={handleLogout}
+                      className="flex items-center gap-2 text-red-600 hover:text-red-700 font-medium text-sm"
+                    >
+                      <LogOut className="w-5 h-5" />
+                      Logout
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <Link href="/login" className="text-gray-700 hover:text-blue-600 font-medium text-sm">
+                      Sign In
+                    </Link>
+                    <Link href="/register" className="bg-blue-600 text-white px-4 md:px-6 py-2 rounded-lg hover:bg-blue-700 font-medium text-sm">
+                      Join
+                    </Link>
+                  </>
+                )}
+              </div>
+
+              {/* Mobile Menu Button */}
+              <button
+                onClick={() => setIsOpen(!isOpen)}
+                className="md:hidden text-gray-700"
+              >
+                {isOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
+              </button>
+            </div>
           </div>
 
           {/* Mobile Menu */}

@@ -9,6 +9,14 @@ import { confirmDialog, toast } from '@/lib/dialogs';
 
 const MAX_REOPENS = 3;
 
+const formatLeft = (ms: number) => {
+  if (ms <= 0) return '0h 0m';
+  const days = Math.floor(ms / 86400000);
+  const hours = Math.floor((ms % 86400000) / 3600000);
+  const minutes = Math.floor((ms % 3600000) / 60000);
+  return days > 0 ? `${days}d ${hours}h ${minutes}m` : `${hours}h ${minutes}m`;
+};
+
 export default function AuctionDetail() {
   const params = useParams();
   const router = useRouter();
@@ -21,6 +29,8 @@ export default function AuctionDetail() {
   const [bidLoading, setBidLoading] = useState(false);
   const [bidError, setBidError] = useState('');
   const [timeLeft, setTimeLeft] = useState('');
+  const [payLeft, setPayLeft] = useState('');
+  const [paying, setPaying] = useState(false);
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [imageIndex, setImageIndex] = useState(0);
 
@@ -95,6 +105,34 @@ export default function AuctionDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auctionId]);
 
+  // When the buyer comes back from Paystack, confirm the payment
+  useEffect(() => {
+    const query = new URLSearchParams(window.location.search);
+    const reference = query.get('reference') || query.get('trxref');
+    if (!reference) return;
+
+    window.history.replaceState({}, '', window.location.pathname);
+
+    const verify = async () => {
+      try {
+        const response = await API.post('/payments/verify', { reference });
+        if (response.data.paymentStatus === 'held') {
+          toast.success('Payment received. The seller has been told.');
+        } else if (response.data.paymentStatus === 'refunded') {
+          toast.info('This payment was refunded because the auction was no longer waiting for it.');
+        } else {
+          toast.info('We are still confirming your payment. This page will update shortly.');
+        }
+        await fetchAuctionData();
+      } catch (err: any) {
+        toast.error(err.response?.data?.error || 'Could not confirm your payment');
+      }
+    };
+
+    verify();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auctionId]);
+
   // Load the seller's real rating and sales once we know who the seller is
   const sellerIdForStats = auction?.sellerId?._id;
   useEffect(() => {
@@ -106,20 +144,23 @@ export default function AuctionDetail() {
     if (!auction?.endsAt) return;
 
     const updateTimer = () => {
-      const now = new Date();
-      const end = new Date(auction.endsAt);
-      const diff = end.getTime() - now.getTime();
+      const now = Date.now();
+      const diff = new Date(auction.endsAt).getTime() - now;
 
       if (diff < 0) {
         setTimeLeft('Auction Ended');
-        return;
+      } else {
+        const hours = Math.floor(diff / (1000 * 60 * 60));
+        const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+        const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+        setTimeLeft(`${hours}h ${minutes}m ${seconds}s`);
       }
 
-      const hours = Math.floor(diff / (1000 * 60 * 60));
-      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-      const seconds = Math.floor((diff % (1000 * 60)) / 1000);
-
-      setTimeLeft(`${hours}h ${minutes}m ${seconds}s`);
+      if (auction.paymentDueAt) {
+        setPayLeft(formatLeft(new Date(auction.paymentDueAt).getTime() - now));
+      } else {
+        setPayLeft('');
+      }
     };
 
     updateTimer();
@@ -168,7 +209,7 @@ export default function AuctionDetail() {
 
     const ok = await confirmDialog({
       title: 'Accept this bid?',
-      message: `Accept the bid of ₦${amount} from ${name}? This ends the auction and they win it.`,
+      message: `Accept the bid of ₦${amount} from ${name}?\n\nThey will have 3 days to pay. If they do not, the auction goes to the next highest bidder.`,
       confirmText: 'Accept bid',
     });
     if (!ok) return;
@@ -176,10 +217,30 @@ export default function AuctionDetail() {
     try {
       setError('');
       await API.post(`/auctions/${auctionId}/bids/${bid._id}/accept`);
-      toast.success('Bid accepted. The auction is now sold.');
+      toast.success('Bid accepted. Waiting for the buyer to pay.');
       await fetchAuctionData();
     } catch (err: any) {
+      if (err.response?.data?.code === 'PAYOUT_REQUIRED') {
+        const go = await confirmDialog({
+          title: 'Add your payout account first',
+          message: 'You need a payout account before you can accept a bid, so we know where to send your money.',
+          confirmText: 'Add payout account',
+        });
+        if (go) router.push('/profile/payout');
+        return;
+      }
       toast.error(err.response?.data?.error || 'Could not accept this bid');
+    }
+  };
+
+  const handlePayNow = async () => {
+    setPaying(true);
+    try {
+      const response = await API.post(`/payments/auctions/${auctionId}/initialize`);
+      window.location.href = response.data.authorizationUrl;
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Could not start the payment');
+      setPaying(false);
     }
   };
 
@@ -327,6 +388,7 @@ export default function AuctionDetail() {
   const isSellerLoggedIn = !!(currentUser && sellerId && currentUser._id === sellerId);
   const isAdmin = currentUser?.role === 'admin';
   const isSold = auction.status === 'sold';
+  const isAwaiting = auction.status === 'awaiting_payment';
   const isExpired = timeLeft === 'Auction Ended';
   const viewer = auction.viewer || {};
   const reopensLeft = Math.max(0, MAX_REOPENS - (auction.reopenCount || 0));
@@ -364,6 +426,11 @@ export default function AuctionDetail() {
               {isSold && (
                 <span className="absolute top-3 right-3 z-10 bg-green-600 text-white text-xs font-bold px-3 py-1 rounded-full">
                   SOLD
+                </span>
+              )}
+              {isAwaiting && (
+                <span className="absolute top-3 right-3 z-10 bg-yellow-500 text-white text-xs font-bold px-3 py-1 rounded-full">
+                  PAYMENT PENDING
                 </span>
               )}
               <img
@@ -461,13 +528,13 @@ export default function AuctionDetail() {
               </div>
 
               <p className="mt-4 text-xs text-gray-500 bg-gray-50 rounded-lg p-3">
-                For everyone's safety, the seller's contact details are private. They are shared with the winning bidder once the seller accepts a bid.
+                For everyone's safety, contact details are private. They are shared between the seller and the winning bidder once the sale is paid.
               </p>
             </div>
           </div>
 
           <div>
-            {auction.isLive && !isSellerLoggedIn && !isSold && (
+            {auction.isLive && !isSellerLoggedIn && !isSold && !isAwaiting && (
               <Link
                 href={`/live/${auctionId}`}
                 className="block bg-red-600 text-white rounded-lg p-4 mb-6 text-center font-bold hover:bg-red-700 transition"
@@ -483,6 +550,45 @@ export default function AuctionDetail() {
               >
                 {auction.isLive ? 'You are live - Manage Stream' : 'Go Live'}
               </Link>
+            )}
+
+            {isAwaiting && viewer.role === 'winner' && (
+              <div className="bg-yellow-50 border-2 border-yellow-300 rounded-lg p-6 mb-6">
+                <p className="text-sm text-yellow-800 font-semibold mb-1">YOU WON - PAY NOW</p>
+                <p className="text-3xl font-bold text-yellow-900">₦{auction.winningBid?.toLocaleString()}</p>
+                <p className="text-sm text-gray-700 mt-3">
+                  Pay within <strong>{payLeft}</strong>. If you do not, the item goes to the next highest bidder and
+                  you get a strike. 3 strikes block you from bidding.
+                </p>
+                <button
+                  onClick={handlePayNow}
+                  disabled={paying}
+                  className="w-full mt-4 bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700 disabled:bg-gray-400 transition"
+                >
+                  {paying ? 'Opening checkout...' : 'Pay now'}
+                </button>
+                <p className="text-xs text-gray-500 mt-3">
+                  Your payment is held by TradeSpace until you confirm the item arrived.
+                </p>
+              </div>
+            )}
+
+            {isAwaiting && viewer.role === 'seller' && (
+              <div className="bg-yellow-50 border-2 border-yellow-300 rounded-lg p-6 mb-6">
+                <p className="text-sm text-yellow-800 font-semibold mb-1">WAITING FOR PAYMENT</p>
+                <p className="text-3xl font-bold text-yellow-900">₦{auction.winningBid?.toLocaleString()}</p>
+                <p className="text-sm text-gray-700 mt-3">
+                  {auction.winnerId?.fullName || 'The buyer'} has <strong>{payLeft}</strong> left to pay. If they
+                  do not, the auction goes to the next highest bidder.
+                </p>
+              </div>
+            )}
+
+            {isAwaiting && viewer.role !== 'winner' && viewer.role !== 'seller' && (
+              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6 mb-6 text-center">
+                <p className="font-semibold text-yellow-900">A bid has been accepted</p>
+                <p className="text-sm text-gray-700 mt-1">This item is waiting for the winner to pay.</p>
+              </div>
             )}
 
             {isSold && (
@@ -562,7 +668,7 @@ export default function AuctionDetail() {
               </div>
             )}
 
-            {!isSold && (
+            {auction.status === 'active' && (
               <div className="bg-red-50 border-2 border-red-200 rounded-lg p-6 mb-6">
                 <div className="flex items-center gap-2 mb-2">
                   <Clock className="w-5 h-5 text-red-600" />
@@ -572,7 +678,7 @@ export default function AuctionDetail() {
               </div>
             )}
 
-            {isSellerLoggedIn && !isSold && isExpired && auction.status === 'active' && (
+            {isSellerLoggedIn && isExpired && auction.status === 'active' && (
               <div className="bg-white rounded-lg shadow p-6 mb-6">
                 <h3 className="font-bold text-black mb-2">This auction has expired</h3>
                 <p className="text-sm text-gray-600 mb-4">
@@ -599,7 +705,7 @@ export default function AuctionDetail() {
 
               {auction.currentBid && (
                 <>
-                  <p className="text-sm text-gray-600 mb-2">{isSold ? 'Winning Bid' : 'Current Bid'}</p>
+                  <p className="text-sm text-gray-600 mb-2">{isSold || isAwaiting ? 'Winning Bid' : 'Current Bid'}</p>
                   <p className="text-3xl font-bold text-blue-600 mb-4">₦{auction.currentBid?.toLocaleString()}</p>
                 </>
               )}
@@ -610,7 +716,7 @@ export default function AuctionDetail() {
               </div>
             </div>
 
-            {!isSellerLoggedIn && !isExpired && !isSold && auction.status === 'active' && (
+            {!isSellerLoggedIn && !isExpired && auction.status === 'active' && (
               <form onSubmit={handlePlaceBid} className="bg-white rounded-lg shadow p-6 mb-6">
                 <h3 className="font-bold text-black mb-4">Place a Bid</h3>
                 {bidError && (
@@ -636,7 +742,7 @@ export default function AuctionDetail() {
               </form>
             )}
 
-            {isSellerLoggedIn && !isSold && (
+            {isSellerLoggedIn && !isSold && !isAwaiting && (
               <button
                 onClick={handleDeleteAuction}
                 className="w-full bg-red-600 text-white py-3 rounded-lg font-bold hover:bg-red-700 transition flex items-center justify-center gap-2 mb-6"
@@ -646,7 +752,7 @@ export default function AuctionDetail() {
               </button>
             )}
 
-            {isExpired && !isSold && !isSellerLoggedIn && (
+            {isExpired && auction.status === 'active' && !isSellerLoggedIn && (
               <div className="bg-gray-100 rounded-lg p-6 text-center mb-6">
                 <p className="text-gray-700 font-semibold">This auction has ended</p>
               </div>
@@ -678,7 +784,7 @@ export default function AuctionDetail() {
             <div className="space-y-3">
               {[...auction.bids].reverse().map((bid: any, idx: number) => {
                 const isWinningBid =
-                  isSold &&
+                  (isSold || isAwaiting) &&
                   bid.amount === auction.winningBid &&
                   bid.bidderId?._id &&
                   bid.bidderId._id === auction.winnerId?._id;
