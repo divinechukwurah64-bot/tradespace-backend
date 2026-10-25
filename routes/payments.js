@@ -7,11 +7,9 @@ const User = require('../models/User');
 const auth = require('../middleware/auth');
 const paystack = require('../utils/paystack');
 const { settleTransaction } = require('../utils/payments');
+const { getFrontendBase } = require('../utils/frontendUrl');
 
 const router = express.Router();
-
-const frontendBaseUrl = () =>
-  (process.env.FRONTEND_URL || 'http://localhost:3000').split(',')[0].trim().replace(/\/+$/, '');
 
 const describe = (err) =>
   err.response && err.response.data ? JSON.stringify(err.response.data) : err.message;
@@ -106,7 +104,7 @@ router.post('/auctions/:id/initialize', auth, async (req, res) => {
         email: buyer.email,
         amountKobo: Math.round(amount * 100),
         reference,
-        callbackUrl: `${frontendBaseUrl()}/auctions/${auction._id}`,
+        callbackUrl: `${getFrontendBase(req)}/auctions/${auction._id}`,
         metadata: { auctionId: String(auction._id), transactionId: String(tx._id) }
       });
     } catch (err) {

@@ -42,7 +42,20 @@ API.interceptors.response.use(
 export const authAPI = {
   register: (data) => API.post('/auth/register', data),
   login: (data) => API.post('/auth/login', data),
-  getMe: () => API.get('/auth/me'),
+  // The server never reveals admin status to normal pages. Only the admin page asks
+  // the admin-only check below, and anyone who is not an admin is refused.
+  getMe: async () => {
+    const response = await API.get('/auth/me');
+    if (typeof window !== 'undefined' && window.location.pathname.startsWith('/admin')) {
+      try {
+        const adminCheck = await API.get('/admin/me');
+        response.data = { ...response.data, role: adminCheck.data.role };
+      } catch (err) {
+        // not an admin, so no role is added
+      }
+    }
+    return response;
+  },
 };
 
 export default API;
