@@ -8,8 +8,24 @@ const PAYMENT_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
 const REMINDER_BEFORE_MS = 24 * 60 * 60 * 1000;
 const MAX_DEFAULTS = 3;
 
+const AUTO_RELEASE_MS = 7 * 24 * 60 * 60 * 1000;
+const PAYOUT_RETRY_MS = 30 * 60 * 1000;
+const MAX_PAYOUT_ATTEMPTS = 60;
+
 const money = (n) => `₦${Number(n).toLocaleString()}`;
 const idOf = (value) => (value ? String(value._id || value) : null);
+
+// Tells every admin about something that needs a human
+const notifyAdmins = async (payload) => {
+  try {
+    const admins = await User.find({ role: 'admin' }).select('_id');
+    for (const admin of admins) {
+      await notify(admin._id, payload);
+    }
+  } catch (err) {
+    console.error('notifyAdmins error:', err.message);
+  }
+};
 
 // Tries to send a payment back. If that fails, flags it so an admin can do it by hand.
 const refundSafely = async (tx, reason) => {
@@ -64,6 +80,8 @@ const settleTransaction = async (reference) => {
   }
 
   claimed.paymentStatus = 'held';
+  claimed.payoutStatus = 'none';
+  claimed.autoReleaseAt = new Date(Date.now() + AUTO_RELEASE_MS);
   await claimed.save();
 
   auction.status = 'sold';
@@ -87,6 +105,179 @@ const settleTransaction = async (reference) => {
 
   return claimed;
 };
+
+// ---------- Paying the seller ----------
+
+// Approves a payment for release and queues the payout
+const queuePayout = async (tx) => {
+  tx.inspectionStatus = 'approved';
+  tx.payoutStatus = 'queued';
+  tx.payoutNextAttemptAt = new Date();
+  tx.autoReleaseAt = null;
+  await tx.save();
+  return tx;
+};
+
+// The money reached the seller
+const markPaid = async (txId) => {
+  const tx = await Transaction.findOneAndUpdate(
+    { _id: txId, paymentStatus: 'held', payoutStatus: { $in: ['processing', 'queued'] } },
+    {
+      $set: {
+        payoutStatus: 'paid',
+        paymentStatus: 'released',
+        releasedAt: new Date(),
+        payoutAt: new Date(),
+        payoutError: ''
+      }
+    },
+    { new: true }
+  );
+
+  if (tx) {
+    await notify(tx.sellerId, {
+      type: 'payment',
+      title: 'You have been paid',
+      message: `${money(tx.sellerPayout)} has been sent to your bank account.`,
+      link: `/auctions/${tx.auctionId}`
+    });
+  }
+  return tx;
+};
+
+// The payout did not work. Try again later, or hand it to an admin after too many tries.
+const scheduleRetry = async (txId, message) => {
+  const tx = await Transaction.findById(txId);
+  if (!tx || tx.payoutStatus === 'paid') return null;
+
+  tx.payoutError = String(message || 'Unknown error').slice(0, 300);
+
+  if (tx.payoutAttempts >= MAX_PAYOUT_ATTEMPTS) {
+    tx.payoutStatus = 'failed';
+    await tx.save();
+    await notifyAdmins({
+      type: 'payment',
+      title: 'A seller payout failed',
+      message: `A ${money(tx.sellerPayout)} payout could not be sent: ${tx.payoutError}`,
+      link: '/admin'
+    });
+    return tx;
+  }
+
+  tx.payoutStatus = 'queued';
+  tx.payoutNextAttemptAt = new Date(Date.now() + PAYOUT_RETRY_MS);
+  await tx.save();
+  return tx;
+};
+
+// Sends the seller their money. Checks any earlier attempt first, so nobody is paid twice.
+const attemptPayout = async (txId) => {
+  const tx = await Transaction.findOneAndUpdate(
+    {
+      _id: txId,
+      paymentStatus: 'held',
+      payoutStatus: 'queued',
+      disputeStatus: { $ne: 'filed' },
+      payoutNextAttemptAt: { $lte: new Date() }
+    },
+    { $set: { payoutStatus: 'processing', payoutStartedAt: new Date() }, $inc: { payoutAttempts: 1 } },
+    { new: true }
+  );
+  if (!tx) return null;
+
+  try {
+    if (tx.payoutReference) {
+      let previous;
+      try {
+        previous = await paystack.verifyTransfer(tx.payoutReference);
+      } catch (err) {
+        await scheduleRetry(tx._id, 'Could not check the earlier payout attempt');
+        return null;
+      }
+
+      if (previous) {
+        if (previous.status === 'success') return markPaid(tx._id);
+        if (!['failed', 'reversed'].includes(previous.status)) {
+          // Still being processed. Paystack will tell us the result.
+          return tx;
+        }
+      }
+    }
+
+    const seller = await User.findById(tx.sellerId).select('+paystackRecipientCode');
+    if (!seller || !seller.paystackRecipientCode) {
+      await scheduleRetry(tx._id, 'The seller has no payout account');
+      return null;
+    }
+
+    const reference = `PO-${tx._id}-${tx.payoutAttempts}`;
+    await Transaction.updateOne({ _id: tx._id }, { $set: { payoutReference: reference } });
+
+    const result = await paystack.initiateTransfer({
+      amountKobo: Math.round(tx.sellerPayout * 100),
+      recipient: seller.paystackRecipientCode,
+      reference,
+      reason: `TradeSpace payout ${tx._id}`
+    });
+
+    if (result && result.transfer_code) {
+      await Transaction.updateOne({ _id: tx._id }, { $set: { payoutTransferCode: result.transfer_code } });
+    }
+
+    if (result && result.status === 'success') return markPaid(tx._id);
+
+    if (result && result.status === 'otp') {
+      await scheduleRetry(
+        tx._id,
+        'Paystack is asking for an OTP. Turn off "Confirm transfers before sending" in Paystack Settings, then Preferences.'
+      );
+      return null;
+    }
+
+    // pending or queued: the webhook or the 15 minute check will confirm the final result
+    return tx;
+  } catch (err) {
+    const message =
+      err.response && err.response.data && err.response.data.message
+        ? err.response.data.message
+        : err.message;
+    console.error('Payout attempt failed:', message);
+    await scheduleRetry(tx._id, message);
+    return null;
+  }
+};
+
+// Paystack told us how a payout ended
+const handleTransferResult = async (reference, outcome, message) => {
+  const tx = await Transaction.findOne({ payoutReference: reference });
+  if (!tx || tx.payoutStatus === 'paid') return null;
+
+  if (outcome === 'success') return markPaid(tx._id);
+  return scheduleRetry(tx._id, message || 'The transfer failed');
+};
+
+// A payout has been "processing" for a while. Ask Paystack what happened.
+const reconcilePayout = async (tx) => {
+  if (!tx.payoutReference) {
+    await scheduleRetry(tx._id, 'The payout never started');
+    return;
+  }
+
+  try {
+    const result = await paystack.verifyTransfer(tx.payoutReference);
+    if (!result) {
+      await scheduleRetry(tx._id, 'Paystack has no record of this payout');
+    } else if (result.status === 'success') {
+      await markPaid(tx._id);
+    } else if (['failed', 'reversed'].includes(result.status)) {
+      await scheduleRetry(tx._id, `The transfer ${result.status}`);
+    }
+  } catch (err) {
+    console.error('reconcilePayout error:', err.message);
+  }
+};
+
+// ---------- Deadlines ----------
 
 // The winner did not pay in time: strike them and offer the auction to the next highest bidder
 const handleMissedPayment = async (auction) => {
@@ -178,62 +369,130 @@ const handleMissedPayment = async (auction) => {
   }
 };
 
+// Reminders and unpaid auctions
+const processPaymentDeadlines = async () => {
+  const now = new Date();
+
+  const needReminder = await Auction.find({
+    status: 'awaiting_payment',
+    paymentReminderSent: false,
+    paymentDueAt: { $gt: now, $lte: new Date(now.getTime() + REMINDER_BEFORE_MS) }
+  });
+
+  for (const auction of needReminder) {
+    await notify(auction.winnerId, {
+      type: 'payment',
+      title: 'Payment reminder',
+      message: `Pay ${money(auction.winningBid)} for "${auction.title}" within 24 hours or it goes to the next bidder and you get a strike.`,
+      link: `/auctions/${auction._id}`
+    });
+    auction.paymentReminderSent = true;
+    await auction.save();
+  }
+
+  const overdue = await Auction.find({
+    status: 'awaiting_payment',
+    paymentDueAt: { $lte: now }
+  });
+
+  for (const auction of overdue) {
+    try {
+      await handleMissedPayment(auction);
+    } catch (err) {
+      console.error(`Could not process the missed payment for auction ${auction._id}:`, err.message);
+    }
+  }
+};
+
+// Held payments the buyer never confirmed or disputed are released after 7 days
+const processAutoReleases = async () => {
+  const due = await Transaction.find({
+    paymentStatus: 'held',
+    payoutStatus: 'none',
+    disputeStatus: { $ne: 'filed' },
+    autoReleaseAt: { $lte: new Date() }
+  }).limit(20);
+
+  for (const tx of due) {
+    try {
+      await queuePayout(tx);
+      await notify(tx.sellerId, {
+        type: 'payment',
+        title: 'Payment released',
+        message: `The buyer did not report a problem, so ${money(tx.sellerPayout)} is being sent to your bank.`,
+        link: `/auctions/${tx.auctionId}`
+      });
+      await notify(tx.buyerId, {
+        type: 'payment',
+        title: 'Payment released to the seller',
+        message: 'You did not report a problem within 7 days, so the seller has been paid.',
+        link: `/auctions/${tx.auctionId}`
+      });
+    } catch (err) {
+      console.error('Auto release failed:', err.message);
+    }
+  }
+};
+
+// Sends queued payouts and checks stuck ones
+const processPayouts = async () => {
+  const now = new Date();
+
+  const due = await Transaction.find({
+    paymentStatus: 'held',
+    payoutStatus: 'queued',
+    disputeStatus: { $ne: 'filed' },
+    payoutNextAttemptAt: { $lte: now }
+  })
+    .select('_id')
+    .limit(20);
+
+  for (const tx of due) {
+    await attemptPayout(tx._id);
+  }
+
+  const stuck = await Transaction.find({
+    paymentStatus: 'held',
+    payoutStatus: 'processing',
+    payoutStartedAt: { $lte: new Date(now.getTime() - 15 * 60 * 1000) }
+  }).limit(20);
+
+  for (const tx of stuck) {
+    await reconcilePayout(tx);
+  }
+};
+
 let running = false;
 
-// Sends 24 hour reminders and moves unpaid auctions on
-const processPaymentDeadlines = async () => {
+const runJobs = async () => {
   if (running) return;
   running = true;
 
   try {
-    const now = new Date();
-
-    const needReminder = await Auction.find({
-      status: 'awaiting_payment',
-      paymentReminderSent: false,
-      paymentDueAt: { $gt: now, $lte: new Date(now.getTime() + REMINDER_BEFORE_MS) }
-    });
-
-    for (const auction of needReminder) {
-      await notify(auction.winnerId, {
-        type: 'payment',
-        title: 'Payment reminder',
-        message: `Pay ${money(auction.winningBid)} for "${auction.title}" within 24 hours or it goes to the next bidder and you get a strike.`,
-        link: `/auctions/${auction._id}`
-      });
-      auction.paymentReminderSent = true;
-      await auction.save();
-    }
-
-    const overdue = await Auction.find({
-      status: 'awaiting_payment',
-      paymentDueAt: { $lte: now }
-    });
-
-    for (const auction of overdue) {
-      try {
-        await handleMissedPayment(auction);
-      } catch (err) {
-        console.error(`Could not process the missed payment for auction ${auction._id}:`, err.message);
-      }
-    }
+    await processPaymentDeadlines();
+    await processAutoReleases();
+    await processPayouts();
   } catch (err) {
-    console.error('Payment deadline check failed:', err.message);
+    console.error('Payment jobs failed:', err.message);
   } finally {
     running = false;
   }
 };
 
 const startPaymentJobs = () => {
-  setInterval(processPaymentDeadlines, 5 * 60 * 1000);
-  setTimeout(processPaymentDeadlines, 15 * 1000);
+  setInterval(runJobs, 5 * 60 * 1000);
+  setTimeout(runJobs, 15 * 1000);
   console.log('Payment deadline check started');
 };
 
 module.exports = {
   PAYMENT_WINDOW_MS,
+  AUTO_RELEASE_MS,
   MAX_DEFAULTS,
+  notifyAdmins,
   settleTransaction,
-  processPaymentDeadlines,
+  queuePayout,
+  attemptPayout,
+  handleTransferResult,
   startPaymentJobs
 };

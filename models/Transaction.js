@@ -16,8 +16,20 @@ const transactionSchema = new mongoose.Schema({
   inspectionNotes: { type: String, default: '' },
   disputeStatus: { type: String, enum: ['none', 'filed', 'resolved'], default: 'none' },
   disputeNotes: { type: String, default: '' },
+  disputeReason: { type: String, default: '' },
+  disputeOpenedAt: { type: Date, default: null },
+  disputeResolvedAt: { type: Date, default: null },
   returnInitiatedAt: { type: Date, default: null },
   returnConfirmedAt: { type: Date, default: null },
+  autoReleaseAt: { type: Date, default: null },
+  payoutStatus: { type: String, enum: ['none', 'queued', 'processing', 'paid', 'failed'], default: 'none' },
+  payoutReference: { type: String, default: null },
+  payoutTransferCode: { type: String, default: null },
+  payoutAttempts: { type: Number, default: 0 },
+  payoutNextAttemptAt: { type: Date, default: null },
+  payoutStartedAt: { type: Date, default: null },
+  payoutAt: { type: Date, default: null },
+  payoutError: { type: String, default: '' },
   createdAt: { type: Date, default: Date.now },
   capturedAt: { type: Date, default: null },
   releasedAt: { type: Date, default: null },
@@ -25,8 +37,8 @@ const transactionSchema = new mongoose.Schema({
 });
 
 transactionSchema.pre('save', function(next) {
-  this.platformCommission = (this.amount * this.platformCommissionPercent) / 100;
-  this.sellerPayout = this.amount - this.platformCommission;
+  this.platformCommission = Math.round(this.amount * this.platformCommissionPercent) / 100;
+  this.sellerPayout = Math.round((this.amount - this.platformCommission) * 100) / 100;
   next();
 });
 

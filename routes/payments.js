@@ -6,15 +6,38 @@ const Transaction = require('../models/Transaction');
 const User = require('../models/User');
 const auth = require('../middleware/auth');
 const paystack = require('../utils/paystack');
-const { settleTransaction } = require('../utils/payments');
+const notify = require('../utils/notify');
+const {
+  settleTransaction,
+  queuePayout,
+  attemptPayout,
+  handleTransferResult,
+  notifyAdmins
+} = require('../utils/payments');
 const { getFrontendBase } = require('../utils/frontendUrl');
 
 const router = express.Router();
 
+const DISPUTE_REASONS = [
+  'Item not received',
+  'Item not as described',
+  'Item damaged',
+  'Other'
+];
+
+const money = (n) => `₦${Number(n).toLocaleString()}`;
+
 const describe = (err) =>
   err.response && err.response.data ? JSON.stringify(err.response.data) : err.message;
 
-// PAYSTACK WEBHOOK - Paystack tells us a payment succeeded, even if the buyer closed the tab
+// The payment for an auction that the buyer has paid. Only the buyer or the seller may see it.
+const findPaidTransaction = (auctionId) =>
+  Transaction.findOne({
+    auctionId,
+    paymentStatus: { $in: ['held', 'released', 'refunded', 'captured'] }
+  }).sort({ capturedAt: -1, createdAt: -1 });
+
+// PAYSTACK WEBHOOK - payments and payouts both report here
 router.post('/webhook', async (req, res) => {
   try {
     const secret = process.env.PAYSTACK_SECRET_KEY;
@@ -33,8 +56,20 @@ router.post('/webhook', async (req, res) => {
     }
 
     const event = req.body;
-    if (event && event.event === 'charge.success' && event.data && event.data.reference) {
-      await settleTransaction(event.data.reference);
+    const data = event && event.data;
+
+    if (event && data && data.reference) {
+      if (event.event === 'charge.success') {
+        await settleTransaction(data.reference);
+      } else if (event.event === 'transfer.success') {
+        await handleTransferResult(data.reference, 'success');
+      } else if (event.event === 'transfer.failed' || event.event === 'transfer.reversed') {
+        await handleTransferResult(
+          data.reference,
+          'failed',
+          typeof data.failures === 'string' ? data.failures : event.event
+        );
+      }
     }
 
     res.sendStatus(200);
@@ -145,6 +180,148 @@ router.post('/verify', auth, async (req, res) => {
   } catch (err) {
     console.error('POST /payments/verify error:', describe(err));
     res.status(503).json({ error: 'Could not confirm the payment right now' });
+  }
+});
+
+// WHERE IS THE MONEY - what the buyer or the seller sees after a payment
+router.get('/auctions/:id/status', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ error: 'Invalid auction' });
+    }
+
+    const tx = await findPaidTransaction(id);
+    if (!tx) {
+      return res.json({ payment: null });
+    }
+
+    const isBuyer = tx.buyerId.toString() === req.user.userId;
+    const isSeller = tx.sellerId.toString() === req.user.userId;
+    if (!isBuyer && !isSeller) {
+      return res.status(403).json({ error: 'Not allowed to view this payment' });
+    }
+
+    res.json({
+      payment: {
+        role: isBuyer ? 'buyer' : 'seller',
+        status: tx.paymentStatus,
+        payoutStatus: tx.payoutStatus,
+        amount: tx.amount,
+        sellerPayout: isSeller ? tx.sellerPayout : null,
+        autoReleaseAt: tx.autoReleaseAt,
+        disputeStatus: tx.disputeStatus,
+        disputeReason: isBuyer ? tx.disputeReason : null
+      }
+    });
+  } catch (err) {
+    console.error('GET /payments/auctions/:id/status error:', describe(err));
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// I RECEIVED THE ITEM - the buyer releases the payment to the seller
+router.post('/auctions/:id/confirm-received', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ error: 'Invalid auction' });
+    }
+
+    const tx = await findPaidTransaction(id);
+    if (!tx || tx.buyerId.toString() !== req.user.userId) {
+      return res.status(404).json({ error: 'Payment not found' });
+    }
+
+    if (tx.paymentStatus !== 'held') {
+      return res.status(400).json({ error: 'This payment cannot be released' });
+    }
+    if (tx.disputeStatus === 'filed') {
+      return res.status(400).json({ error: 'A problem was reported, so our team will decide this' });
+    }
+    if (tx.payoutStatus !== 'none') {
+      return res.status(400).json({ error: 'The seller is already being paid' });
+    }
+
+    await queuePayout(tx);
+
+    await notify(tx.sellerId, {
+      type: 'payment',
+      title: 'The buyer confirmed receipt',
+      message: `${money(tx.sellerPayout)} is being sent to your bank account.`,
+      link: `/auctions/${tx.auctionId}`
+    });
+
+    await attemptPayout(tx._id);
+
+    const fresh = await Transaction.findById(tx._id).select('paymentStatus payoutStatus');
+    res.json({ paymentStatus: fresh.paymentStatus, payoutStatus: fresh.payoutStatus });
+  } catch (err) {
+    console.error('POST /payments/auctions/:id/confirm-received error:', describe(err));
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// REPORT A PROBLEM - the buyer freezes the payment until our team decides
+router.post('/auctions/:id/dispute', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ error: 'Invalid auction' });
+    }
+
+    const reason = typeof req.body.reason === 'string' ? req.body.reason : '';
+    const note = typeof req.body.note === 'string' ? req.body.note.trim() : '';
+
+    if (!DISPUTE_REASONS.includes(reason)) {
+      return res.status(400).json({ error: 'Choose a reason' });
+    }
+    if (note.length > 500) {
+      return res.status(400).json({ error: 'Your note cannot be longer than 500 characters' });
+    }
+
+    const tx = await findPaidTransaction(id);
+    if (!tx || tx.buyerId.toString() !== req.user.userId) {
+      return res.status(404).json({ error: 'Payment not found' });
+    }
+
+    if (tx.paymentStatus !== 'held') {
+      return res.status(400).json({ error: 'A problem can only be reported on a payment that is still held' });
+    }
+    if (tx.payoutStatus !== 'none') {
+      return res.status(400).json({ error: 'The seller has already been paid or is being paid' });
+    }
+    if (tx.disputeStatus === 'filed') {
+      return res.status(400).json({ error: 'You have already reported a problem' });
+    }
+
+    tx.disputeStatus = 'filed';
+    tx.disputeReason = reason;
+    tx.disputeNotes = note;
+    tx.disputeOpenedAt = new Date();
+    tx.autoReleaseAt = null;
+    await tx.save();
+
+    const auction = await Auction.findById(tx.auctionId).select('title');
+    const title = auction ? auction.title : 'an item';
+
+    await notify(tx.sellerId, {
+      type: 'payment',
+      title: 'The buyer reported a problem',
+      message: `"${title}": ${reason}. Our team is reviewing it and the payment is on hold.`,
+      link: `/auctions/${tx.auctionId}`
+    });
+    await notifyAdmins({
+      type: 'payment',
+      title: 'New payment dispute',
+      message: `"${title}" (${money(tx.amount)}): ${reason}.`,
+      link: '/admin'
+    });
+
+    res.json({ disputeStatus: 'filed' });
+  } catch (err) {
+    console.error('POST /payments/auctions/:id/dispute error:', describe(err));
+    res.status(500).json({ error: err.message });
   }
 });
 

@@ -101,6 +101,30 @@ const refundTransaction = async (reference) => {
   return res.data.data;
 };
 
+// Sends money to a seller. The reference stops the same payout from being sent twice.
+const initiateTransfer = async ({ amountKobo, recipient, reference, reason }) => {
+  const res = await http().post('/transfer', {
+    source: 'balance',
+    amount: amountKobo,
+    currency: 'NGN',
+    recipient,
+    reference,
+    reason
+  });
+  return res.data.data;
+};
+
+// Asks Paystack what happened to a payout. Returns null if Paystack has no record of it.
+const verifyTransfer = async (reference) => {
+  try {
+    const res = await http().get(`/transfer/verify/${encodeURIComponent(reference)}`);
+    return res.data.data;
+  } catch (err) {
+    if (err.response && err.response.status === 404) return null;
+    throw err;
+  }
+};
+
 module.exports = {
   isTestMode,
   isLookupFailure,
@@ -109,5 +133,7 @@ module.exports = {
   createRecipient,
   initializeTransaction,
   verifyTransaction,
-  refundTransaction
+  refundTransaction,
+  initiateTransfer,
+  verifyTransfer
 };

@@ -22,6 +22,9 @@ export default function LivePage() {
   const [status, setStatus] = useState<Status>('idle');
   const [error, setError] = useState('');
   const [hasVideo, setHasVideo] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [remotePaused, setRemotePaused] = useState(false);
+  const [togglingPause, setTogglingPause] = useState(false);
   const [audioBlocked, setAudioBlocked] = useState(false);
   const [viewerCount, setViewerCount] = useState(0);
   const [bidAmount, setBidAmount] = useState('');
@@ -77,6 +80,8 @@ export default function LivePage() {
     if (track.kind === Track.Kind.Video && videoRef.current) {
       track.attach(videoRef.current);
       setHasVideo(true);
+      // If the seller was already paused when this viewer joined
+      setRemotePaused(track.isMuted);
     } else if (track.kind === Track.Kind.Audio && audioBoxRef.current) {
       audioBoxRef.current.appendChild(track.attach());
     }
@@ -89,12 +94,20 @@ export default function LivePage() {
       track.detach();
       if (track.kind === Track.Kind.Video) setHasVideo(false);
     });
+    room.on(RoomEvent.TrackMuted, (publication, participant) => {
+      if (!participant.isLocal && publication.kind === Track.Kind.Video) setRemotePaused(true);
+    });
+    room.on(RoomEvent.TrackUnmuted, (publication, participant) => {
+      if (!participant.isLocal && publication.kind === Track.Kind.Video) setRemotePaused(false);
+    });
     room.on(RoomEvent.ParticipantConnected, () => setViewerCount(room.remoteParticipants.size));
     room.on(RoomEvent.ParticipantDisconnected, () => setViewerCount(room.remoteParticipants.size));
     room.on(RoomEvent.AudioPlaybackStatusChanged, () => setAudioBlocked(!room.canPlaybackAudio));
     room.on(RoomEvent.Disconnected, () => {
       setStatus((s) => (s === 'live' ? 'ended' : s));
       setHasVideo(false);
+      setPaused(false);
+      setRemotePaused(false);
     });
     return room;
   };
@@ -146,6 +159,7 @@ export default function LivePage() {
         cam.track.attach(videoRef.current);
       }
       setHasVideo(true);
+      setPaused(false);
       setViewerCount(room.remoteParticipants.size);
       setStatus('live');
       toast.success('You are live');
@@ -170,6 +184,34 @@ export default function LivePage() {
     }
   };
 
+  // SELLER: pause or resume. The seller stays connected, so viewers keep the same stream.
+  const togglePause = async () => {
+    const room = roomRef.current;
+    if (!room || togglingPause) return;
+
+    setTogglingPause(true);
+    try {
+      if (!paused) {
+        await room.localParticipant.setCameraEnabled(false);
+        await room.localParticipant.setMicrophoneEnabled(false);
+        setPaused(true);
+        toast.info('Stream paused. Viewers see a pause message.');
+      } else {
+        const cam = await room.localParticipant.setCameraEnabled(true);
+        await room.localParticipant.setMicrophoneEnabled(true);
+        if (cam?.track && videoRef.current) {
+          cam.track.attach(videoRef.current);
+        }
+        setPaused(false);
+        toast.success('You are live again');
+      }
+    } catch (err) {
+      toast.error('Could not change the stream. Allow camera and microphone access and try again.');
+    } finally {
+      setTogglingPause(false);
+    }
+  };
+
   const endStream = async () => {
     const ok = await confirmDialog({
       title: 'End the live stream?',
@@ -190,6 +232,7 @@ export default function LivePage() {
     roomRef.current = null;
     setStatus('ended');
     setHasVideo(false);
+    setPaused(false);
     toast.success('Stream ended');
     loadAuction();
   };
@@ -276,12 +319,16 @@ export default function LivePage() {
 
   let overlay = '';
   if (status === 'connecting') overlay = 'Connecting...';
+  else if (status === 'live' && isHost && paused) overlay = 'Stream paused. Viewers can see you are away.';
+  else if (status === 'live' && !isHost && remotePaused) overlay = 'The seller paused the stream. It will resume soon.';
   else if (status === 'live' && !hasVideo) overlay = isHost ? 'Starting your camera...' : "Waiting for the seller's video...";
   else if (status === 'ended') overlay = 'The stream has ended';
   else if (status === 'idle') {
     if (isHost) overlay = 'Press Go Live to start streaming';
     else overlay = auction.isLive ? 'Joining the stream...' : 'This auction is not live right now';
   }
+
+  const showPausedBadge = status === 'live' && (isHost ? paused : remotePaused);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -311,8 +358,12 @@ export default function LivePage() {
             <div ref={audioBoxRef} className="hidden" />
 
             {status === 'live' && (
-              <span className="absolute top-3 left-3 bg-red-600 text-white text-xs font-bold px-3 py-1 rounded-full">
-                LIVE
+              <span
+                className={`absolute top-3 left-3 text-white text-xs font-bold px-3 py-1 rounded-full ${
+                  showPausedBadge ? 'bg-yellow-500' : 'bg-red-600'
+                }`}
+              >
+                {showPausedBadge ? 'PAUSED' : 'LIVE'}
               </span>
             )}
 
@@ -323,7 +374,11 @@ export default function LivePage() {
             )}
 
             {overlay && (
-              <div className="absolute inset-0 flex items-center justify-center text-white text-lg px-4 text-center">
+              <div
+                className={`absolute inset-0 flex items-center justify-center text-white text-lg px-4 text-center ${
+                  showPausedBadge ? 'bg-black/70' : ''
+                }`}
+              >
                 {overlay}
               </div>
             )}
@@ -342,6 +397,18 @@ export default function LivePage() {
                 className="bg-red-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-red-700"
               >
                 Go Live
+              </button>
+            )}
+
+            {isHost && status === 'live' && (
+              <button
+                onClick={togglePause}
+                disabled={togglingPause}
+                className={`px-6 py-2 rounded-lg font-bold text-white disabled:bg-gray-400 ${
+                  paused ? 'bg-green-600 hover:bg-green-700' : 'bg-yellow-500 hover:bg-yellow-600'
+                }`}
+              >
+                {paused ? 'Resume stream' : 'Pause stream'}
               </button>
             )}
 
