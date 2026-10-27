@@ -9,6 +9,13 @@ import { confirmDialog, toast } from '@/lib/dialogs';
 
 const MAX_REOPENS = 3;
 
+const DISPUTE_REASONS = [
+  'Item not received',
+  'Item not as described',
+  'Item damaged',
+  'Other',
+];
+
 const formatLeft = (ms: number) => {
   if (ms <= 0) return '0h 0m';
   const days = Math.floor(ms / 86400000);
@@ -48,6 +55,12 @@ export default function AuctionDetail() {
   const [reviewError, setReviewError] = useState('');
   const [reviewing, setReviewing] = useState(false);
 
+  const [payment, setPayment] = useState<any>(null);
+  const [paymentBusy, setPaymentBusy] = useState(false);
+  const [disputeOpen, setDisputeOpen] = useState(false);
+  const [disputeReason, setDisputeReason] = useState(DISPUTE_REASONS[0]);
+  const [disputeNote, setDisputeNote] = useState('');
+
   const fetchAuctionData = async () => {
     try {
       const response = await API.get(`/auctions/${auctionId}`);
@@ -75,6 +88,15 @@ export default function AuctionDetail() {
       setSellerStats(response.data.stats);
     } catch (err) {
       console.error('Failed to load seller stats');
+    }
+  };
+
+  const fetchPayment = async () => {
+    try {
+      const response = await API.get(`/payments/auctions/${auctionId}/status`);
+      setPayment(response.data.payment);
+    } catch (err) {
+      // not part of this sale, or not logged in
     }
   };
 
@@ -139,6 +161,19 @@ export default function AuctionDetail() {
     if (sellerIdForStats) loadSellerStats(sellerIdForStats);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sellerIdForStats]);
+
+  // Once the sale is paid, the buyer and the seller see where the money is
+  const paymentRole = auction?.status === 'sold' ? auction?.viewer?.role : null;
+  useEffect(() => {
+    if (!paymentRole) {
+      setPayment(null);
+      return;
+    }
+    fetchPayment();
+    const interval = setInterval(fetchPayment, 5000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paymentRole, auctionId]);
 
   useEffect(() => {
     if (!auction?.endsAt) return;
@@ -241,6 +276,45 @@ export default function AuctionDetail() {
     } catch (err: any) {
       toast.error(err.response?.data?.error || 'Could not start the payment');
       setPaying(false);
+    }
+  };
+
+  const handleConfirmReceived = async () => {
+    const ok = await confirmDialog({
+      title: 'Did the item arrive?',
+      message: 'This pays the seller and cannot be undone. Only confirm if you have the item and it is as described.',
+      confirmText: 'Yes, I received it',
+    });
+    if (!ok) return;
+
+    setPaymentBusy(true);
+    try {
+      await API.post(`/payments/auctions/${auctionId}/confirm-received`);
+      toast.success('Thanks. The seller is being paid.');
+      await fetchPayment();
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Could not confirm. Please try again.');
+    } finally {
+      setPaymentBusy(false);
+    }
+  };
+
+  const handleSubmitDispute = async (e: any) => {
+    e.preventDefault();
+    setPaymentBusy(true);
+    try {
+      await API.post(`/payments/auctions/${auctionId}/dispute`, {
+        reason: disputeReason,
+        note: disputeNote,
+      });
+      setDisputeOpen(false);
+      setDisputeNote('');
+      toast.success('Problem reported. Your money stays safe while we look into it.');
+      await fetchPayment();
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Could not report the problem');
+    } finally {
+      setPaymentBusy(false);
     }
   };
 
@@ -386,7 +460,6 @@ export default function AuctionDetail() {
 
   const sellerId = auction?.sellerId?._id;
   const isSellerLoggedIn = !!(currentUser && sellerId && currentUser._id === sellerId);
-  const isAdmin = currentUser?.role === 'admin';
   const isSold = auction.status === 'sold';
   const isAwaiting = auction.status === 'awaiting_payment';
   const isExpired = timeLeft === 'Auction Ended';
@@ -395,6 +468,10 @@ export default function AuctionDetail() {
   const images = auction.images && auction.images.length > 0
     ? auction.images
     : ['https://via.placeholder.com/500x500?text=No+Image'];
+
+  const releaseDate = payment?.autoReleaseAt
+    ? new Date(payment.autoReleaseAt).toLocaleDateString()
+    : '';
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -601,6 +678,137 @@ export default function AuctionDetail() {
                     <Link href={`/users/${auction.winnerId._id}`} className="font-semibold text-blue-600 hover:underline">
                       {auction.winnerId.fullName}
                     </Link>
+                  </p>
+                )}
+              </div>
+            )}
+
+            {isSold && payment && payment.role === 'buyer' && (
+              <div className="bg-white rounded-lg shadow p-6 mb-6">
+                <h3 className="font-bold text-black mb-2">Your payment</h3>
+
+                {payment.status === 'held' && payment.disputeStatus === 'filed' && (
+                  <p className="text-sm text-gray-700">
+                    You reported a problem ({payment.disputeReason}). Our team is reviewing it and your money stays
+                    safe until it is decided.
+                  </p>
+                )}
+
+                {payment.status === 'held' && payment.disputeStatus !== 'filed' && payment.payoutStatus === 'none' && (
+                  <>
+                    <p className="text-sm text-gray-700 mb-4">
+                      Your payment is held safely. Once the item arrives, confirm it to pay the seller.
+                      {releaseDate && ` If you do nothing, the seller is paid automatically on ${releaseDate}.`}
+                    </p>
+
+                    {!disputeOpen ? (
+                      <div className="flex flex-col gap-3">
+                        <button
+                          onClick={handleConfirmReceived}
+                          disabled={paymentBusy}
+                          className="w-full bg-green-600 text-white py-3 rounded-lg font-bold hover:bg-green-700 disabled:bg-gray-400 transition"
+                        >
+                          I received the item
+                        </button>
+                        <button
+                          onClick={() => setDisputeOpen(true)}
+                          className="w-full bg-white text-red-600 border border-red-300 py-3 rounded-lg font-bold hover:bg-red-50 transition"
+                        >
+                          Report a problem
+                        </button>
+                      </div>
+                    ) : (
+                      <form onSubmit={handleSubmitDispute}>
+                        <label className="block text-sm font-bold text-gray-700 mb-2">What went wrong?</label>
+                        <select
+                          value={disputeReason}
+                          onChange={(e) => setDisputeReason(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500 text-black bg-white"
+                        >
+                          {DISPUTE_REASONS.map((r) => (
+                            <option key={r} value={r}>
+                              {r}
+                            </option>
+                          ))}
+                        </select>
+                        <textarea
+                          value={disputeNote}
+                          onChange={(e) => setDisputeNote(e.target.value)}
+                          placeholder="Tell us what happened (optional)"
+                          rows={3}
+                          maxLength={500}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500 text-black bg-white"
+                        />
+                        <div className="flex gap-3">
+                          <button
+                            type="button"
+                            onClick={() => setDisputeOpen(false)}
+                            className="flex-1 border border-gray-300 text-gray-700 py-2 rounded-lg font-semibold hover:bg-gray-50"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="submit"
+                            disabled={paymentBusy}
+                            className="flex-1 bg-red-600 text-white py-2 rounded-lg font-bold hover:bg-red-700 disabled:bg-gray-400"
+                          >
+                            {paymentBusy ? 'Sending...' : 'Report problem'}
+                          </button>
+                        </div>
+                      </form>
+                    )}
+                  </>
+                )}
+
+                {payment.status === 'held' && payment.disputeStatus !== 'filed' && payment.payoutStatus !== 'none' && (
+                  <p className="text-sm text-gray-700">You confirmed the item. The seller is being paid.</p>
+                )}
+
+                {payment.status === 'released' && (
+                  <p className="text-sm text-gray-700">The payment has been released to the seller. Thank you.</p>
+                )}
+
+                {payment.status === 'refunded' && (
+                  <p className="text-sm text-gray-700">Your payment was refunded.</p>
+                )}
+              </div>
+            )}
+
+            {isSold && payment && payment.role === 'seller' && (
+              <div className="bg-white rounded-lg shadow p-6 mb-6">
+                <h3 className="font-bold text-black mb-2">Your payout</h3>
+
+                {payment.status === 'held' && payment.disputeStatus === 'filed' && (
+                  <p className="text-sm text-gray-700">
+                    The buyer reported a problem. Our team is reviewing it and the payment is on hold.
+                  </p>
+                )}
+
+                {payment.status === 'held' && payment.disputeStatus !== 'filed' && payment.payoutStatus === 'none' && (
+                  <p className="text-sm text-gray-700">
+                    The buyer has paid and the money is held safely. Get the item to them. You receive ₦
+                    {Number(payment.sellerPayout).toLocaleString()} when they confirm
+                    {releaseDate ? `, or automatically on ${releaseDate}` : ''}.
+                  </p>
+                )}
+
+                {payment.status === 'held' &&
+                  payment.disputeStatus !== 'filed' &&
+                  (payment.payoutStatus === 'queued' || payment.payoutStatus === 'processing') && (
+                    <p className="text-sm text-gray-700">
+                      Your payout of ₦{Number(payment.sellerPayout).toLocaleString()} is on its way to your bank.
+                    </p>
+                  )}
+
+                {payment.status === 'held' && payment.disputeStatus !== 'filed' && payment.payoutStatus === 'failed' && (
+                  <p className="text-sm text-gray-700">
+                    We hit a problem sending your payout. Our team has been told and will sort it out.
+                  </p>
+                )}
+
+                {payment.status === 'released' && (
+                  <p className="text-sm text-gray-700">
+                    ₦{Number(payment.sellerPayout).toLocaleString()} has been sent to your bank account.
                   </p>
                 )}
               </div>
@@ -876,7 +1084,7 @@ export default function AuctionDetail() {
             <div className="space-y-4">
               {comments.map((c: any) => {
                 const isAuthor = !!(currentUser && c.userId?._id === currentUser._id);
-                const canDelete = isAuthor || isSellerLoggedIn || isAdmin;
+                const canDelete = isAuthor || isSellerLoggedIn;
                 return (
                   <div key={c._id} className="flex gap-3 py-3 border-b border-gray-100 last:border-b-0">
                     <div className="w-10 h-10 flex-shrink-0 bg-gradient-to-br from-blue-600 to-blue-800 rounded-full flex items-center justify-center text-white font-bold">
