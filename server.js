@@ -173,6 +173,7 @@ app.use('/api/live', require('./routes/live'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/payments', require('./routes/payments'));
 app.use('/api/notifications', require('./routes/notifications'));
+app.use('/api/support', require('./routes/support'));
 
 // Identify the user on connect. Visitors without a valid token still connect,
 // but as anonymous: they can watch auctions and never join a user room.

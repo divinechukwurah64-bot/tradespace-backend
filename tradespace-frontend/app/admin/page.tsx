@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import API, { authAPI } from '../../lib/api';
+import { confirmDialog, toast } from '../../lib/dialogs';
 
 type Stats = {
   users?: number;
@@ -11,6 +12,7 @@ type Stats = {
   totalAuctions?: number;
   totalGigs?: number;
   openDisputes?: number;
+  failedPayouts?: number;
 };
 
 type AdminUser = {
@@ -20,6 +22,8 @@ type AdminUser = {
   phone?: string;
   role: string;
   isBanned: boolean;
+  paymentDefaults?: number;
+  biddingBlocked?: boolean;
   createdAt: string;
 };
 
@@ -47,10 +51,15 @@ type AdminGig = {
 type AdminTransaction = {
   _id: string;
   amount: number;
+  sellerPayout: number;
   platformCommission: number;
   paymentStatus: string;
+  payoutStatus: string;
+  payoutError?: string;
   inspectionStatus: string;
   disputeStatus: string;
+  disputeReason?: string;
+  disputeNotes?: string;
   createdAt: string;
   buyerId?: { fullName?: string; email?: string } | null;
   sellerId?: { fullName?: string; email?: string } | null;
@@ -61,10 +70,10 @@ type AdminTransaction = {
 type TabName = 'users' | 'auctions' | 'gigs' | 'transactions';
 
 const s = {
-  page: { maxWidth: 1100, margin: '0 auto', padding: '32px 16px', color: '#111827' } as React.CSSProperties,
+  page: { maxWidth: 1200, margin: '0 auto', padding: '32px 16px', color: '#111827' } as React.CSSProperties,
   title: { fontSize: 28, fontWeight: 700, marginBottom: 24 } as React.CSSProperties,
   statsRow: { display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 28 } as React.CSSProperties,
-  statCard: { flex: '1 1 160px', background: '#ffffff', border: '1px solid #e5e7eb', borderRadius: 12, padding: 20 } as React.CSSProperties,
+  statCard: { flex: '1 1 150px', background: '#ffffff', border: '1px solid #e5e7eb', borderRadius: 12, padding: 20 } as React.CSSProperties,
   statNumber: { fontSize: 30, fontWeight: 700 } as React.CSSProperties,
   statLabel: { fontSize: 14, color: '#6b7280', marginTop: 4 } as React.CSSProperties,
   tabs: { display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' } as React.CSSProperties,
@@ -80,7 +89,7 @@ const s = {
   tableWrap: { background: '#ffffff', border: '1px solid #e5e7eb', borderRadius: 12, overflowX: 'auto' } as React.CSSProperties,
   table: { width: '100%', borderCollapse: 'collapse', fontSize: 14 } as React.CSSProperties,
   th: { textAlign: 'left', padding: '12px 14px', background: '#f9fafb', borderBottom: '1px solid #e5e7eb', whiteSpace: 'nowrap' } as React.CSSProperties,
-  td: { padding: '12px 14px', borderBottom: '1px solid #f3f4f6', verticalAlign: 'middle' } as React.CSSProperties,
+  td: { padding: '12px 14px', borderBottom: '1px solid #f3f4f6', verticalAlign: 'top' } as React.CSSProperties,
   btn: (color: string): React.CSSProperties => ({
     padding: '6px 12px',
     borderRadius: 6,
@@ -91,6 +100,8 @@ const s = {
     fontSize: 13,
     fontWeight: 600,
     marginRight: 6,
+    marginBottom: 6,
+    whiteSpace: 'nowrap',
   }),
   badge: (color: string): React.CSSProperties => ({
     display: 'inline-block',
@@ -101,9 +112,13 @@ const s = {
     fontSize: 12,
     fontWeight: 600,
   }),
+  small: { fontSize: 12, color: '#6b7280', marginTop: 4, maxWidth: 260, wordBreak: 'break-word' } as React.CSSProperties,
   search: { padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: 8, width: 280, marginBottom: 12 } as React.CSSProperties,
   filterRow: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, fontSize: 14 } as React.CSSProperties,
   error: { background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c', padding: 12, borderRadius: 8, marginBottom: 16 } as React.CSSProperties,
+  overlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, padding: 16 } as React.CSSProperties,
+  modal: { background: '#ffffff', borderRadius: 12, padding: 24, width: '100%', maxWidth: 480 } as React.CSSProperties,
+  textarea: { width: '100%', padding: 10, border: '1px solid #d1d5db', borderRadius: 8, marginTop: 12, marginBottom: 16, fontFamily: 'inherit', fontSize: 14 } as React.CSSProperties,
 };
 
 const naira = (n: number | null | undefined) =>
@@ -117,6 +132,16 @@ const paymentColor = (status: string) => {
     case 'captured':
     case 'held': return '#2563eb';
     case 'refunded': return '#d97706';
+    case 'failed': return '#dc2626';
+    default: return '#6b7280';
+  }
+};
+
+const payoutColor = (status: string) => {
+  switch (status) {
+    case 'paid': return '#16a34a';
+    case 'processing':
+    case 'queued': return '#2563eb';
     case 'failed': return '#dc2626';
     default: return '#6b7280';
   }
@@ -140,9 +165,13 @@ export default function AdminPage() {
   const [auctions, setAuctions] = useState<AdminAuction[]>([]);
   const [gigs, setGigs] = useState<AdminGig[]>([]);
   const [transactions, setTransactions] = useState<AdminTransaction[]>([]);
-  const [disputesOnly, setDisputesOnly] = useState(false);
+  const [attentionOnly, setAttentionOnly] = useState(false);
   const [search, setSearch] = useState('');
   const [error, setError] = useState('');
+
+  const [resolve, setResolve] = useState<{ tx: AdminTransaction; action: 'refund' | 'release' } | null>(null);
+  const [resolveNote, setResolveNote] = useState('');
+  const [resolving, setResolving] = useState(false);
 
   const getErrorMessage = (err: any) =>
     err?.response?.data?.error || err?.message || 'Something went wrong';
@@ -211,64 +240,153 @@ export default function AdminPage() {
     try {
       await loadUsers(value);
     } catch (err: any) {
-      setError(getErrorMessage(err));
+      toast.error(getErrorMessage(err));
     }
   };
 
   const toggleBan = async (user: AdminUser) => {
-    const action = user.isBanned ? 'unban' : 'ban';
-    if (!window.confirm(`Are you sure you want to ${action} ${user.fullName}?`)) return;
+    const ok = await confirmDialog({
+      title: user.isBanned ? 'Unban this user?' : 'Ban this user?',
+      message: user.fullName,
+      confirmText: user.isBanned ? 'Unban' : 'Ban',
+      danger: !user.isBanned,
+    });
+    if (!ok) return;
     try {
-      setError('');
       await API.patch(`/admin/users/${user._id}/ban`);
+      toast.success(user.isBanned ? 'User unbanned' : 'User banned');
       await Promise.all([loadUsers(search), loadStats()]);
     } catch (err: any) {
-      setError(getErrorMessage(err));
+      toast.error(getErrorMessage(err));
+    }
+  };
+
+  const unblockBidding = async (user: AdminUser) => {
+    const ok = await confirmDialog({
+      title: 'Let this user bid again?',
+      message: `${user.fullName} has ${user.paymentDefaults || 0} unpaid-win strikes. This clears them.`,
+      confirmText: 'Unblock bidding',
+    });
+    if (!ok) return;
+    try {
+      await API.patch(`/admin/users/${user._id}/unblock-bidding`);
+      toast.success('Bidding unblocked');
+      await loadUsers(search);
+    } catch (err: any) {
+      toast.error(getErrorMessage(err));
     }
   };
 
   const endAuction = async (auction: AdminAuction) => {
-    if (!window.confirm(`End the auction "${auction.title}" now?`)) return;
+    const ok = await confirmDialog({
+      title: 'End this auction now?',
+      message: auction.title,
+      confirmText: 'End auction',
+    });
+    if (!ok) return;
     try {
-      setError('');
       await API.patch(`/admin/auctions/${auction._id}/end`);
+      toast.success('Auction ended');
       await Promise.all([loadAuctions(), loadStats()]);
     } catch (err: any) {
-      setError(getErrorMessage(err));
+      toast.error(getErrorMessage(err));
     }
   };
 
   const removeAuction = async (auction: AdminAuction) => {
-    if (!window.confirm(`Permanently remove "${auction.title}"? This cannot be undone.`)) return;
+    const ok = await confirmDialog({
+      title: 'Remove this auction?',
+      message: `"${auction.title}" will be deleted for good.`,
+      confirmText: 'Remove',
+      danger: true,
+    });
+    if (!ok) return;
     try {
-      setError('');
       await API.delete(`/admin/auctions/${auction._id}`);
+      toast.success('Auction removed');
       await Promise.all([loadAuctions(), loadStats()]);
     } catch (err: any) {
-      setError(getErrorMessage(err));
+      toast.error(getErrorMessage(err));
     }
   };
 
   const toggleGig = async (gig: AdminGig) => {
-    const action = gig.status === 'active' ? 'pause' : 'reactivate';
-    if (!window.confirm(`Are you sure you want to ${action} "${gig.title}"?`)) return;
+    const action = gig.status === 'active' ? 'Pause' : 'Reactivate';
+    const ok = await confirmDialog({
+      title: `${action} this gig?`,
+      message: gig.title,
+      confirmText: action,
+    });
+    if (!ok) return;
     try {
-      setError('');
       await API.patch(`/admin/gigs/${gig._id}/status`);
+      toast.success(`Gig updated`);
       await loadGigs();
     } catch (err: any) {
-      setError(getErrorMessage(err));
+      toast.error(getErrorMessage(err));
     }
   };
 
   const removeGig = async (gig: AdminGig) => {
-    if (!window.confirm(`Permanently remove "${gig.title}"? This cannot be undone.`)) return;
+    const ok = await confirmDialog({
+      title: 'Remove this gig?',
+      message: `"${gig.title}" will be deleted for good.`,
+      confirmText: 'Remove',
+      danger: true,
+    });
+    if (!ok) return;
     try {
-      setError('');
       await API.delete(`/admin/gigs/${gig._id}`);
+      toast.success('Gig removed');
       await Promise.all([loadGigs(), loadStats()]);
     } catch (err: any) {
-      setError(getErrorMessage(err));
+      toast.error(getErrorMessage(err));
+    }
+  };
+
+  const itemTitle = (t: AdminTransaction) => t.auctionId?.title || t.gigId?.title || 'Unknown item';
+
+  const openResolve = (tx: AdminTransaction, action: 'refund' | 'release') => {
+    setResolveNote('');
+    setResolve({ tx, action });
+  };
+
+  const submitResolve = async () => {
+    if (!resolve) return;
+    setResolving(true);
+    try {
+      await API.post(`/admin/transactions/${resolve.tx._id}/${resolve.action}`, { note: resolveNote });
+      toast.success(resolve.action === 'refund' ? 'The buyer is being refunded' : 'The seller payout has started');
+      setResolve(null);
+      setResolveNote('');
+      await Promise.all([loadTransactions(), loadStats()]);
+    } catch (err: any) {
+      toast.error(getErrorMessage(err));
+      await loadTransactions();
+    } finally {
+      setResolving(false);
+    }
+  };
+
+  const retryPayout = async (tx: AdminTransaction) => {
+    const ok = await confirmDialog({
+      title: 'Retry this payout?',
+      message: `Send ${naira(tx.sellerPayout)} to the seller for "${itemTitle(tx)}" again.`,
+      confirmText: 'Retry payout',
+    });
+    if (!ok) return;
+    try {
+      const response = await API.post(`/admin/transactions/${tx._id}/release`, { note: '' });
+      if (response.data.payoutStatus === 'paid' || response.data.paymentStatus === 'released') {
+        toast.success('The seller has been paid');
+      } else if (response.data.payoutError) {
+        toast.error(`Payout not sent yet: ${response.data.payoutError}`);
+      } else {
+        toast.info('The payout was started and will update shortly');
+      }
+      await Promise.all([loadTransactions(), loadStats()]);
+    } catch (err: any) {
+      toast.error(getErrorMessage(err));
     }
   };
 
@@ -280,9 +398,10 @@ export default function AdminPage() {
     );
   }
 
-  const visibleTransactions = disputesOnly
-    ? transactions.filter((t) => t.disputeStatus === 'filed')
-    : transactions;
+  const needsAttention = (t: AdminTransaction) =>
+    t.disputeStatus === 'filed' || t.payoutStatus === 'failed' || t.paymentStatus === 'captured';
+
+  const visibleTransactions = attentionOnly ? transactions.filter(needsAttention) : transactions;
 
   return (
     <div style={s.page}>
@@ -315,6 +434,10 @@ export default function AdminPage() {
           <div style={s.statCard}>
             <div style={s.statNumber}>{stats.openDisputes ?? 0}</div>
             <div style={s.statLabel}>Open disputes</div>
+          </div>
+          <div style={s.statCard}>
+            <div style={s.statNumber}>{stats.failedPayouts ?? 0}</div>
+            <div style={s.statLabel}>Failed payouts</div>
           </div>
         </div>
       )}
@@ -352,6 +475,7 @@ export default function AdminPage() {
                   <th style={s.th}>Phone</th>
                   <th style={s.th}>Role</th>
                   <th style={s.th}>Status</th>
+                  <th style={s.th}>Strikes</th>
                   <th style={s.th}>Joined</th>
                   <th style={s.th}>Action</th>
                 </tr>
@@ -359,7 +483,7 @@ export default function AdminPage() {
               <tbody>
                 {users.length === 0 && (
                   <tr>
-                    <td style={s.td} colSpan={7}>No users found</td>
+                    <td style={s.td} colSpan={8}>No users found</td>
                   </tr>
                 )}
                 {users.map((u) => (
@@ -374,7 +498,13 @@ export default function AdminPage() {
                       ) : (
                         <span style={s.badge('#16a34a')}>Active</span>
                       )}
+                      {u.biddingBlocked && (
+                        <div style={{ marginTop: 6 }}>
+                          <span style={s.badge('#d97706')}>Bidding blocked</span>
+                        </div>
+                      )}
                     </td>
+                    <td style={s.td}>{u.paymentDefaults || 0} of 3</td>
                     <td style={s.td}>{formatDate(u.createdAt)}</td>
                     <td style={s.td}>
                       {u.role !== 'admin' && (
@@ -383,6 +513,11 @@ export default function AdminPage() {
                           onClick={() => toggleBan(u)}
                         >
                           {u.isBanned ? 'Unban' : 'Ban'}
+                        </button>
+                      )}
+                      {(u.biddingBlocked || (u.paymentDefaults || 0) > 0) && (
+                        <button style={s.btn('#2563eb')} onClick={() => unblockBidding(u)}>
+                          Unblock bidding
                         </button>
                       )}
                     </td>
@@ -423,10 +558,16 @@ export default function AdminPage() {
                   <td style={s.td}>
                     <span
                       style={s.badge(
-                        a.status === 'active' ? '#16a34a' : a.status === 'sold' ? '#2563eb' : '#6b7280'
+                        a.status === 'active'
+                          ? '#16a34a'
+                          : a.status === 'sold'
+                          ? '#2563eb'
+                          : a.status === 'awaiting_payment'
+                          ? '#d97706'
+                          : '#6b7280'
                       )}
                     >
-                      {a.status}
+                      {a.status === 'awaiting_payment' ? 'awaiting payment' : a.status}
                     </span>
                   </td>
                   <td style={s.td}>{formatDate(a.endsAt)}</td>
@@ -510,10 +651,10 @@ export default function AdminPage() {
           <label style={s.filterRow}>
             <input
               type="checkbox"
-              checked={disputesOnly}
-              onChange={(e) => setDisputesOnly(e.target.checked)}
+              checked={attentionOnly}
+              onChange={(e) => setAttentionOnly(e.target.checked)}
             />
-            Show open disputes only
+            Show only payments that need attention (disputes, failed payouts, manual refunds)
           </label>
           <div style={s.tableWrap}>
             <table style={s.table}>
@@ -523,40 +664,138 @@ export default function AdminPage() {
                   <th style={s.th}>Buyer</th>
                   <th style={s.th}>Seller</th>
                   <th style={s.th}>Amount</th>
-                  <th style={s.th}>Commission</th>
+                  <th style={s.th}>Seller gets</th>
                   <th style={s.th}>Payment</th>
-                  <th style={s.th}>Inspection</th>
+                  <th style={s.th}>Payout</th>
                   <th style={s.th}>Dispute</th>
                   <th style={s.th}>Date</th>
+                  <th style={s.th}>Action</th>
                 </tr>
               </thead>
               <tbody>
                 {visibleTransactions.length === 0 && (
                   <tr>
-                    <td style={s.td} colSpan={9}>No transactions found</td>
+                    <td style={s.td} colSpan={10}>No transactions found</td>
                   </tr>
                 )}
-                {visibleTransactions.map((t) => (
-                  <tr key={t._id}>
-                    <td style={s.td}>{t.auctionId?.title || t.gigId?.title || 'Unknown item'}</td>
-                    <td style={s.td}>{t.buyerId?.fullName || 'Unknown'}</td>
-                    <td style={s.td}>{t.sellerId?.fullName || 'Unknown'}</td>
-                    <td style={s.td}>{naira(t.amount)}</td>
-                    <td style={s.td}>{naira(t.platformCommission)}</td>
-                    <td style={s.td}>
-                      <span style={s.badge(paymentColor(t.paymentStatus))}>{t.paymentStatus}</span>
-                    </td>
-                    <td style={s.td}>{t.inspectionStatus}</td>
-                    <td style={s.td}>
-                      <span style={s.badge(disputeColor(t.disputeStatus))}>{t.disputeStatus}</span>
-                    </td>
-                    <td style={s.td}>{formatDate(t.createdAt)}</td>
-                  </tr>
-                ))}
+                {visibleTransactions.map((t) => {
+                  const canResolve =
+                    t.paymentStatus === 'held' && (t.payoutStatus === 'none' || t.payoutStatus === 'failed');
+                  const needsManualRefund = t.paymentStatus === 'captured';
+
+                  return (
+                    <tr key={t._id}>
+                      <td style={s.td}>{itemTitle(t)}</td>
+                      <td style={s.td}>{t.buyerId?.fullName || 'Unknown'}</td>
+                      <td style={s.td}>{t.sellerId?.fullName || 'Unknown'}</td>
+                      <td style={s.td}>{naira(t.amount)}</td>
+                      <td style={s.td}>{naira(t.sellerPayout)}</td>
+                      <td style={s.td}>
+                        <span style={s.badge(paymentColor(t.paymentStatus))}>{t.paymentStatus}</span>
+                      </td>
+                      <td style={s.td}>
+                        <span style={s.badge(payoutColor(t.payoutStatus))}>{t.payoutStatus}</span>
+                        {t.payoutError && <div style={s.small}>{t.payoutError}</div>}
+                      </td>
+                      <td style={s.td}>
+                        <span style={s.badge(disputeColor(t.disputeStatus))}>{t.disputeStatus}</span>
+                        {t.disputeReason && <div style={s.small}>{t.disputeReason}</div>}
+                        {t.disputeNotes && <div style={s.small}>{t.disputeNotes}</div>}
+                      </td>
+                      <td style={s.td}>{formatDate(t.createdAt)}</td>
+                      <td style={s.td}>
+                        {canResolve && (
+                          <>
+                            <button style={s.btn('#dc2626')} onClick={() => openResolve(t, 'refund')}>
+                              Refund buyer
+                            </button>
+                            {t.payoutStatus === 'failed' ? (
+                              <button style={s.btn('#2563eb')} onClick={() => retryPayout(t)}>
+                                Retry payout
+                              </button>
+                            ) : (
+                              <button style={s.btn('#16a34a')} onClick={() => openResolve(t, 'release')}>
+                                Pay seller
+                              </button>
+                            )}
+                          </>
+                        )}
+                        {needsManualRefund && (
+                          <button style={s.btn('#dc2626')} onClick={() => openResolve(t, 'refund')}>
+                            Refund buyer
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         </>
+      )}
+
+      {resolve && (
+        <div style={s.overlay} onClick={() => !resolving && setResolve(null)}>
+          <div style={s.modal} onClick={(e) => e.stopPropagation()}>
+            <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>
+              {resolve.action === 'refund' ? 'Refund the buyer?' : 'Pay the seller?'}
+            </h2>
+            <p style={{ fontSize: 14, color: '#374151' }}>
+              {resolve.action === 'refund'
+                ? `${naira(resolve.tx.amount)} goes back to ${resolve.tx.buyerId?.fullName || 'the buyer'}, and "${itemTitle(
+                    resolve.tx
+                  )}" returns to the seller as expired.`
+                : `${naira(resolve.tx.sellerPayout)} is sent to ${resolve.tx.sellerId?.fullName || 'the seller'}.`}
+            </p>
+            {resolve.tx.disputeReason && (
+              <p style={{ fontSize: 13, color: '#6b7280', marginTop: 8 }}>
+                Buyer reported: {resolve.tx.disputeReason}
+                {resolve.tx.disputeNotes ? ` - ${resolve.tx.disputeNotes}` : ''}
+              </p>
+            )}
+            <textarea
+              style={s.textarea}
+              rows={3}
+              maxLength={500}
+              placeholder="Note for both people (optional)"
+              value={resolveNote}
+              onChange={(e) => setResolveNote(e.target.value)}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
+              <button
+                onClick={() => setResolve(null)}
+                disabled={resolving}
+                style={{
+                  padding: '8px 18px',
+                  borderRadius: 8,
+                  border: '1px solid #d1d5db',
+                  background: '#ffffff',
+                  cursor: 'pointer',
+                  fontWeight: 600,
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={submitResolve}
+                disabled={resolving}
+                style={{
+                  padding: '8px 18px',
+                  borderRadius: 8,
+                  border: 'none',
+                  background: resolve.action === 'refund' ? '#dc2626' : '#16a34a',
+                  color: '#ffffff',
+                  cursor: 'pointer',
+                  fontWeight: 700,
+                  opacity: resolving ? 0.6 : 1,
+                }}
+              >
+                {resolving ? 'Working...' : resolve.action === 'refund' ? 'Refund buyer' : 'Pay seller'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
