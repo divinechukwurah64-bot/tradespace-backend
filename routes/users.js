@@ -4,6 +4,7 @@ const User = require('../models/User');
 const Auction = require('../models/Auction');
 const Gig = require('../models/Gig');
 const Review = require('../models/Review');
+const Transaction = require('../models/Transaction');
 const auth = require('../middleware/auth');
 const paystack = require('../utils/paystack');
 
@@ -236,7 +237,8 @@ router.put('/me/bank', auth, async (req, res) => {
   }
 });
 
-// PUBLIC PROFILE - never includes email, phone or bank details
+// PUBLIC PROFILE - never includes email, phone or bank details.
+// Sold items are never listed here, only counted.
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -256,7 +258,12 @@ router.get('/:id', async (req, res) => {
         { $match: { sellerId: objectId } },
         { $group: { _id: null, average: { $avg: '$rating' }, count: { $sum: 1 } } }
       ]),
-      Auction.countDocuments({ sellerId: id, status: 'sold' }),
+      // Paid sales only. A refunded sale does not count.
+      Transaction.countDocuments({
+        sellerId: objectId,
+        auctionId: { $ne: null },
+        paymentStatus: { $in: ['held', 'released'] }
+      }),
       Auction.countDocuments({ sellerId: id, status: 'active' }),
       Gig.countDocuments({ sellerId: id, status: 'active' }),
       Review.find({ sellerId: id })
@@ -264,7 +271,7 @@ router.get('/:id', async (req, res) => {
         .populate('auctionId', 'title')
         .sort({ createdAt: -1 })
         .limit(20),
-      Auction.find({ sellerId: id, status: { $in: ['active', 'sold'] } })
+      Auction.find({ sellerId: id, status: 'active' })
         .select('title images currentBid startingBid winningBid status endsAt isLive')
         .sort({ createdAt: -1 })
         .limit(12)
