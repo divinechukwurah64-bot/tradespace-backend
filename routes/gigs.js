@@ -110,7 +110,7 @@ router.put('/:id', auth, async (req, res) => {
     }
 
     if (gig.sellerId.toString() !== req.user.userId) {
-      return res.status(403).json({ error: 'You can only update your own gigs' });
+      return res.status(403).json({ error: 'You  can only update your own gigs' });
     }
 
     const { title, description, category, startingPrice, deliveryDays, images, tags } = req.body;

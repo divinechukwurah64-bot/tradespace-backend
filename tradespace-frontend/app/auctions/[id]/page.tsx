@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { Clock, User, ArrowLeft, Heart, Share2, Trash2, Star } from 'lucide-react';
 import API from '@/lib/api';
 import { confirmDialog, toast } from '@/lib/dialogs';
+import ReportButton from '../../components/ReportButton';
 
 const MAX_REOPENS = 3;
 
@@ -983,6 +984,12 @@ export default function AuctionDetail() {
                 <Share2 className="w-5 h-5" />
               </button>
             </div>
+
+            {!isSellerLoggedIn && sellerId && (
+              <div className="text-center mt-4">
+                <ReportButton targetType="auction" targetId={auctionId} label="Report this auction" />
+              </div>
+            )}
           </div>
         </div>
 
@@ -1104,14 +1111,17 @@ export default function AuctionDetail() {
                             <span className="ml-2 text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full">Seller</span>
                           )}
                         </p>
-                        {canDelete && (
-                          <button
-                            onClick={() => handleDeleteComment(c._id)}
-                            className="text-xs text-red-600 hover:underline flex-shrink-0"
-                          >
-                            Delete
-                          </button>
-                        )}
+                        <div className="flex items-center gap-3 flex-shrink-0">
+                          {!isAuthor && <ReportButton targetType="comment" targetId={c._id} />}
+                          {canDelete && (
+                            <button
+                              onClick={() => handleDeleteComment(c._id)}
+                              className="text-xs text-red-600 hover:underline"
+                            >
+                              Delete
+                            </button>
+                          )}
+                        </div>
                       </div>
                       <p className="text-gray-700 text-sm mt-1 break-words whitespace-pre-wrap">{c.content}</p>
                       <p className="text-xs text-gray-500 mt-1">{new Date(c.createdAt).toLocaleString()}</p>

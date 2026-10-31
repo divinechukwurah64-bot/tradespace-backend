@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import API, { authAPI } from '../../lib/api';
 import { confirmDialog, toast } from '../../lib/dialogs';
 
@@ -71,7 +72,10 @@ type TabName = 'users' | 'auctions' | 'gigs' | 'transactions';
 
 const s = {
   page: { maxWidth: 1200, margin: '0 auto', padding: '32px 16px', color: '#111827' } as React.CSSProperties,
-  title: { fontSize: 28, fontWeight: 700, marginBottom: 24 } as React.CSSProperties,
+  header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 24 } as React.CSSProperties,
+  title: { fontSize: 28, fontWeight: 700, margin: 0 } as React.CSSProperties,
+  inboxBtn: { display: 'inline-flex', alignItems: 'center', gap: 8, padding: '10px 20px', borderRadius: 8, background: '#2563eb', color: '#ffffff', fontWeight: 700, textDecoration: 'none' } as React.CSSProperties,
+  inboxBadge: { background: '#dc2626', color: '#ffffff', borderRadius: 999, padding: '1px 9px', fontSize: 13, fontWeight: 700 } as React.CSSProperties,
   statsRow: { display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 28 } as React.CSSProperties,
   statCard: { flex: '1 1 150px', background: '#ffffff', border: '1px solid #e5e7eb', borderRadius: 12, padding: 20 } as React.CSSProperties,
   statNumber: { fontSize: 30, fontWeight: 700 } as React.CSSProperties,
@@ -165,6 +169,7 @@ export default function AdminPage() {
   const [auctions, setAuctions] = useState<AdminAuction[]>([]);
   const [gigs, setGigs] = useState<AdminGig[]>([]);
   const [transactions, setTransactions] = useState<AdminTransaction[]>([]);
+  const [inboxCount, setInboxCount] = useState(0);
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [search, setSearch] = useState('');
   const [error, setError] = useState('');
@@ -201,6 +206,19 @@ export default function AdminPage() {
     setTransactions(res.data);
   }, []);
 
+  // How many reports and support requests are waiting
+  const loadInbox = useCallback(async () => {
+    try {
+      const [reports, tickets] = await Promise.all([
+        API.get('/support/admin/reports', { params: { status: 'open' } }),
+        API.get('/support/admin/tickets', { params: { status: 'open' } }),
+      ]);
+      setInboxCount(reports.data.length + tickets.data.length);
+    } catch (err) {
+      // the badge just stays as it was
+    }
+  }, []);
+
   // Check the user is a logged in admin, then load everything
   useEffect(() => {
     const init = async () => {
@@ -221,6 +239,7 @@ export default function AdminPage() {
           loadAuctions(),
           loadGigs(),
           loadTransactions(),
+          loadInbox(),
         ]);
         setChecking(false);
       } catch (err: any) {
@@ -233,7 +252,14 @@ export default function AdminPage() {
       }
     };
     init();
-  }, [router, loadStats, loadUsers, loadAuctions, loadGigs, loadTransactions]);
+  }, [router, loadStats, loadUsers, loadAuctions, loadGigs, loadTransactions, loadInbox]);
+
+  // Keep the inbox badge fresh
+  useEffect(() => {
+    if (checking) return;
+    const interval = setInterval(loadInbox, 60000);
+    return () => clearInterval(interval);
+  }, [checking, loadInbox]);
 
   const handleSearch = async (value: string) => {
     setSearch(value);
@@ -320,7 +346,7 @@ export default function AdminPage() {
     if (!ok) return;
     try {
       await API.patch(`/admin/gigs/${gig._id}/status`);
-      toast.success(`Gig updated`);
+      toast.success('Gig updated');
       await loadGigs();
     } catch (err: any) {
       toast.error(getErrorMessage(err));
@@ -405,7 +431,13 @@ export default function AdminPage() {
 
   return (
     <div style={s.page}>
-      <h1 style={s.title}>Admin Panel</h1>
+      <div style={s.header}>
+        <h1 style={s.title}>Admin Panel</h1>
+        <Link href="/admin/inbox" style={s.inboxBtn}>
+          Inbox
+          {inboxCount > 0 && <span style={s.inboxBadge}>{inboxCount}</span>}
+        </Link>
+      </div>
 
       {error && <div style={s.error}>{error}</div>}
 

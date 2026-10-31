@@ -2,6 +2,7 @@ const express = require('express');
 const crypto = require('crypto');
 const router = express.Router();
 const jwt = require('jsonwebtoken');
+const rateLimit = require('express-rate-limit');
 const User = require('../models/User');
 const ErrorLog = require('../models/ErrorLog');
 const authMiddleware = require('../middleware/auth');
@@ -12,7 +13,16 @@ const RESET_REQUEST_GAP_MS = 60 * 1000;
 const GENERIC_RESET_MESSAGE =
   'If an account exists for that email, we have sent a password reset link. Check your inbox and spam folder.';
 
+const MIN_PASSWORD_LENGTH = 8;
+const MAX_PASSWORD_LENGTH = 128;
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
+
+const normalizeEmail = (value) =>
+  typeof value === 'string' ? value.trim().toLowerCase() : '';
+
+const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0;
 
 const frontendBaseUrl = () =>
   (process.env.FRONTEND_URL || 'http://localhost:3000').split(',')[0].trim().replace(/\/+$/, '');
@@ -23,6 +33,41 @@ const escapeHtml = (value) =>
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+
+// ---------- Rate limits (per IP) ----------
+
+const makeLimiter = (windowMs, max, message, skipSuccessfulRequests = false) =>
+  rateLimit({
+    windowMs,
+    max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests,
+    message: { error: message }
+  });
+
+// Only failed logins count, so normal users are never slowed down
+const loginLimiter = makeLimiter(
+  15 * 60 * 1000,
+  20,
+  'Too many login attempts. Please wait 15 minutes and try again.',
+  true
+);
+const registerLimiter = makeLimiter(
+  60 * 60 * 1000,
+  30,
+  'Too many sign-up attempts. Please try again later.'
+);
+const forgotLimiter = makeLimiter(
+  15 * 60 * 1000,
+  10,
+  'Too many requests. Please wait 15 minutes and try again.'
+);
+const resetLimiter = makeLimiter(
+  15 * 60 * 1000,
+  10,
+  'Too many attempts. Please wait 15 minutes and try again.'
+);
 
 // Failed emails are saved to the errorlogs collection so you can see them
 const logEmailFailure = async (err, req) => {
@@ -41,27 +86,51 @@ const logEmailFailure = async (err, req) => {
   }
 };
 
-router.post('/register', async (req, res) => {
+router.post('/register', registerLimiter, async (req, res) => {
   try {
     const { fullName, email, password, phone, acceptedTerms } = req.body;
-    if (!fullName || !email || !password) {
+
+    if (!isNonEmptyString(fullName) || typeof email !== 'string' || typeof password !== 'string') {
       return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const cleanEmail = normalizeEmail(email);
+    if (!EMAIL_PATTERN.test(cleanEmail)) {
+      return res.status(400).json({ error: 'Please enter a valid email address' });
+    }
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+    if (password.length > MAX_PASSWORD_LENGTH) {
+      return res.status(400).json({ error: 'Password is too long' });
     }
     if (acceptedTerms !== true) {
       return res.status(400).json({ error: 'You must accept the Terms and Conditions' });
     }
-    const existingUser = await User.findOne({ email });
+
+    const existingUser = await User.findOne({ email: cleanEmail });
     if (existingUser) {
       return res.status(400).json({ error: 'User already exists' });
     }
+
     const user = new User({
-      fullName,
-      email,
+      fullName: fullName.trim(),
+      email: cleanEmail,
       password,
-      phone,
+      phone: typeof phone === 'string' ? phone.trim() : undefined,
       acceptedTermsAt: new Date()
     });
-    await user.save();
+
+    try {
+      await user.save();
+    } catch (saveErr) {
+      // Two sign-ups with the same email at the same moment
+      if (saveErr && saveErr.code === 11000) {
+        return res.status(400).json({ error: 'User already exists' });
+      }
+      throw saveErr;
+    }
+
     const token = jwt.sign({ userId: user._id, email: user.email }, process.env.JWT_SECRET, { expiresIn: '7d' });
     res.status(201).json({
       message: 'User registered successfully',
@@ -73,13 +142,15 @@ router.post('/register', async (req, res) => {
   }
 });
 
-router.post('/login', async (req, res) => {
+router.post('/login', loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
-    if (!email || !password) {
+
+    if (typeof email !== 'string' || typeof password !== 'string' || !email || !password) {
       return res.status(400).json({ error: 'Email and password required' });
     }
-    const user = await User.findOne({ email });
+
+    const user = await User.findOne({ email: normalizeEmail(email) });
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
@@ -87,6 +158,10 @@ router.post('/login', async (req, res) => {
     if (!isMatch) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
+    if (user.isBanned) {
+      return res.status(403).json({ error: 'Account suspended' });
+    }
+
     const token = jwt.sign({ userId: user._id, email: user.email }, process.env.JWT_SECRET, { expiresIn: '7d' });
     res.json({
       message: 'Login successful',
@@ -106,8 +181,8 @@ router.post('/login', async (req, res) => {
 });
 
 // FORGOT PASSWORD - always answers the same way, so nobody can find out who has an account
-router.post('/forgot-password', async (req, res) => {
-  const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+router.post('/forgot-password', forgotLimiter, async (req, res) => {
+  const email = normalizeEmail(req.body.email);
   if (!email) {
     return res.status(400).json({ error: 'Email is required' });
   }
@@ -157,18 +232,20 @@ router.post('/forgot-password', async (req, res) => {
   }
 });
 
-// RESET PASSWORD - needs the token from the email
-router.post('/reset-password', async (req, res) => {
+// RESET PASSWORD - needs the token from the email.
+// Saving the new password also sets passwordChangedAt (see models/User.js),
+// which logs the account out on every other device.
+router.post('/reset-password', resetLimiter, async (req, res) => {
   try {
     const { token, password } = req.body;
 
     if (typeof token !== 'string' || !token || typeof password !== 'string') {
       return res.status(400).json({ error: 'Invalid request' });
     }
-    if (password.length < 8) {
+    if (password.length < MIN_PASSWORD_LENGTH) {
       return res.status(400).json({ error: 'Password must be at least 8 characters' });
     }
-    if (password.length > 128) {
+    if (password.length > MAX_PASSWORD_LENGTH) {
       return res.status(400).json({ error: 'Password is too long' });
     }
 
@@ -196,7 +273,7 @@ router.post('/reset-password', async (req, res) => {
 // ME - the logged in person's own details. Admin status is never revealed here.
 router.get('/me', authMiddleware, async (req, res) => {
   try {
-    const user = await User.findById(req.user.userId).select('-password -role');
+    const user = await User.findById(req.user.userId).select('-password -role -passwordChangedAt');
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }

@@ -5,6 +5,7 @@ const dotenv = require('dotenv');
 const http = require('http');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
+const helmet = require('helmet');
 const socketIO = require('socket.io');
 const User = require('./models/User');
 const ErrorLog = require('./models/ErrorLog');
@@ -14,6 +15,10 @@ dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
+
+// Railway puts one proxy in front of the app. Without this, every request
+// looks like it comes from the same IP and rate limits would hit everyone at once.
+app.set('trust proxy', 1);
 
 // ---------- Error logging ----------
 
@@ -70,6 +75,15 @@ process.on('uncaughtException', (err) => {
   setTimeout(() => process.exit(1), 2000);
 });
 
+// ---------- Security headers ----------
+
+// cross-origin is needed so the Vercel frontend can read responses from this API
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' }
+  })
+);
+
 // ---------- CORS ----------
 
 // FRONTEND_URL can hold one or more origins, comma separated:
@@ -125,7 +139,8 @@ app.use(
     }
   })
 );
-app.use(express.urlencoded({ extended: true }));
+// extended: false stops nested objects in form bodies
+app.use(express.urlencoded({ extended: false }));
 
 // Any response with a 5xx status is logged for you and replaced with a friendly message
 app.use((req, res, next) => {
@@ -183,9 +198,14 @@ io.use(async (socket, next) => {
     if (!token) return next();
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.userId).select('isBanned');
+    const user = await User.findById(decoded.userId).select('isBanned passwordChangedAt');
 
-    if (user && !user.isBanned) {
+    const tokenIsOld =
+      user &&
+      user.passwordChangedAt &&
+      decoded.iat < Math.floor(user.passwordChangedAt.getTime() / 1000);
+
+    if (user && !user.isBanned && !tokenIsOld) {
       socket.userId = decoded.userId.toString();
     }
     return next();
