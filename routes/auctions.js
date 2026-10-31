@@ -20,7 +20,39 @@ const BIDDER_FIELDS = 'fullName';
 const MAX_REOPENS = 3;
 const AUCTION_LENGTH_MS = 24 * 60 * 60 * 1000;
 
+// Input limits
+const MAX_AMOUNT = 1000000000;
+const MAX_TITLE = 150;
+const MAX_DESCRIPTION = 5000;
+const MAX_SHORT_TEXT = 60;
+const MAX_IMAGES = 10;
+const MAX_IMAGE_URL = 500;
+
 const money = (n) => `₦${Number(n).toLocaleString()}`;
+
+const provided = (value) => value !== undefined && value !== null && value !== '';
+
+const isTextWithin = (value, max) =>
+  typeof value === 'string' && value.trim().length > 0 && value.trim().length <= max;
+
+// Only plain numbers and numeric strings count. Arrays and objects become NaN.
+const toAmount = (value) =>
+  typeof value === 'number' || (typeof value === 'string' && value.trim() !== '')
+    ? Number(value)
+    : NaN;
+
+// Returns a clean list of https image links, or null if anything is wrong
+const parseImages = (value) => {
+  if (!Array.isArray(value) || value.length > MAX_IMAGES) return null;
+  const urls = [];
+  for (const item of value) {
+    if (typeof item !== 'string' || item.length > MAX_IMAGE_URL || !/^https:\/\//i.test(item)) {
+      return null;
+    }
+    urls.push(item);
+  }
+  return urls;
+};
 
 const loadAuction = (id) =>
   Auction.findById(id)
@@ -31,12 +63,26 @@ const loadAuction = (id) =>
 // Works whether the value is a plain id or a populated document
 const idOf = (value) => (value ? String(value._id || value) : null);
 
-// Reads the user id from the token if there is one, without requiring a login
-const optionalUserId = (req) => {
+// Reads the user id from the token if there is one, without requiring a login.
+// Applies the same checks as middleware/auth.js, so banned accounts and tokens
+// issued before a password change are treated as logged out.
+const optionalUserId = async (req) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
     if (!token) return null;
-    return jwt.verify(token, process.env.JWT_SECRET).userId;
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.userId).select('isBanned passwordChangedAt');
+    if (!user || user.isBanned) return null;
+
+    if (
+      user.passwordChangedAt &&
+      decoded.iat < Math.floor(user.passwordChangedAt.getTime() / 1000)
+    ) {
+      return null;
+    }
+
+    return String(decoded.userId);
   } catch (err) {
     return null;
   }
@@ -107,7 +153,7 @@ router.get('/:id/social', async (req, res) => {
       return res.status(400).json({ error: 'Invalid auction' });
     }
 
-    const userId = optionalUserId(req);
+    const userId = await optionalUserId(req);
 
     const [likeCount, likedDoc, commentCount, comments] = await Promise.all([
       Like.countDocuments({ auctionId: id }),
@@ -248,7 +294,7 @@ router.get('/:id', async (req, res) => {
     }
 
     const result = auction.toObject();
-    result.viewer = await buildViewer(auction, optionalUserId(req));
+    result.viewer = await buildViewer(auction, await optionalUserId(req));
 
     res.json(result);
   } catch (err) {
@@ -260,25 +306,54 @@ router.get('/:id', async (req, res) => {
 // CREATE AUCTION - Auth required
 router.post('/', auth, async (req, res) => {
   try {
-    const { title, description, category, condition, startingBid, images } = req.body;
+    const { title, description, category, condition, images } = req.body;
 
-    if (!title || !description || !startingBid || !category) {
+    if (
+      !provided(title) ||
+      !provided(description) ||
+      !provided(category) ||
+      !provided(req.body.startingBid)
+    ) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    if (startingBid < 100) {
-      return res.status(400).json({ error: 'Starting bid must be at least ₦100' });
+    if (
+      !isTextWithin(title, MAX_TITLE) ||
+      !isTextWithin(description, MAX_DESCRIPTION) ||
+      !isTextWithin(category, MAX_SHORT_TEXT)
+    ) {
+      return res.status(400).json({ error: 'Title, description or category is invalid or too long' });
+    }
+
+    if (provided(condition) && !isTextWithin(condition, MAX_SHORT_TEXT)) {
+      return res.status(400).json({ error: 'Invalid condition' });
+    }
+
+    const startingBid = toAmount(req.body.startingBid);
+    if (!Number.isSafeInteger(startingBid) || startingBid < 100) {
+      return res.status(400).json({ error: 'Starting bid must be a whole number of at least ₦100' });
+    }
+    if (startingBid > MAX_AMOUNT) {
+      return res.status(400).json({ error: 'Starting bid is too high' });
+    }
+
+    let cleanImages = [];
+    if (provided(images)) {
+      cleanImages = parseImages(images);
+      if (!cleanImages) {
+        return res.status(400).json({ error: 'Invalid images' });
+      }
     }
 
     const auction = new Auction({
       sellerId: req.user.userId,
-      title,
-      description,
-      category,
-      condition: condition || 'Good',
+      title: title.trim(),
+      description: description.trim(),
+      category: category.trim(),
+      condition: provided(condition) ? condition.trim() : 'Good',
       startingBid,
       currentBid: null,
-      images: images || [],
+      images: cleanImages,
       endsAt: new Date(Date.now() + AUCTION_LENGTH_MS),
       status: 'active',
     });
@@ -297,7 +372,11 @@ router.post('/', auth, async (req, res) => {
 // PLACE BID - Auth required
 router.post('/:id/bids', auth, async (req, res) => {
   try {
-    const amount = Number(req.body.amount);
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(404).json({ error: 'Auction not found' });
+    }
+
+    const amount = toAmount(req.body.amount);
     const auction = await Auction.findById(req.params.id);
 
     if (!auction) {
@@ -309,7 +388,7 @@ router.post('/:id/bids', auth, async (req, res) => {
       return res.status(400).json({ error: 'Auction has ended' });
     }
 
-    if (!Number.isFinite(amount) || amount < 1) {
+    if (!Number.isSafeInteger(amount) || amount < 1 || amount > MAX_AMOUNT) {
       return res.status(400).json({ error: 'Invalid bid amount' });
     }
 
@@ -556,6 +635,10 @@ router.post('/:id/review', auth, async (req, res) => {
 // DELETE AUCTION - Only seller can delete
 router.delete('/:id', auth, async (req, res) => {
   try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(404).json({ error: 'Auction not found' });
+    }
+
     const auction = await Auction.findById(req.params.id);
 
     if (!auction) {
@@ -586,6 +669,10 @@ router.delete('/:id', auth, async (req, res) => {
 // UPDATE AUCTION - Only seller can update
 router.put('/:id', auth, async (req, res) => {
   try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(404).json({ error: 'Auction not found' });
+    }
+
     const auction = await Auction.findById(req.params.id);
 
     if (!auction) {
@@ -600,14 +687,54 @@ router.put('/:id', auth, async (req, res) => {
       return res.status(400).json({ error: 'Cannot update auction with active bids' });
     }
 
-    const { title, description, category, condition, startingBid, images } = req.body;
+    const { title, description, category, condition, images } = req.body;
 
-    if (title) auction.title = title;
-    if (description) auction.description = description;
-    if (category) auction.category = category;
-    if (condition) auction.condition = condition;
-    if (startingBid && startingBid >= 100) auction.startingBid = startingBid;
-    if (images) auction.images = images;
+    if (provided(title)) {
+      if (!isTextWithin(title, MAX_TITLE)) {
+        return res.status(400).json({ error: 'Title is invalid or too long' });
+      }
+      auction.title = title.trim();
+    }
+
+    if (provided(description)) {
+      if (!isTextWithin(description, MAX_DESCRIPTION)) {
+        return res.status(400).json({ error: 'Description is invalid or too long' });
+      }
+      auction.description = description.trim();
+    }
+
+    if (provided(category)) {
+      if (!isTextWithin(category, MAX_SHORT_TEXT)) {
+        return res.status(400).json({ error: 'Category is invalid or too long' });
+      }
+      auction.category = category.trim();
+    }
+
+    if (provided(condition)) {
+      if (!isTextWithin(condition, MAX_SHORT_TEXT)) {
+        return res.status(400).json({ error: 'Invalid condition' });
+      }
+      auction.condition = condition.trim();
+    }
+
+    if (provided(req.body.startingBid)) {
+      const startingBid = toAmount(req.body.startingBid);
+      if (!Number.isSafeInteger(startingBid) || startingBid < 100) {
+        return res.status(400).json({ error: 'Starting bid must be a whole number of at least ₦100' });
+      }
+      if (startingBid > MAX_AMOUNT) {
+        return res.status(400).json({ error: 'Starting bid is too high' });
+      }
+      auction.startingBid = startingBid;
+    }
+
+    if (provided(images)) {
+      const cleanImages = parseImages(images);
+      if (!cleanImages) {
+        return res.status(400).json({ error: 'Invalid images' });
+      }
+      auction.images = cleanImages;
+    }
 
     await auction.save();
 
