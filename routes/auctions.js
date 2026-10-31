@@ -63,16 +63,16 @@ const loadAuction = (id) =>
 // Works whether the value is a plain id or a populated document
 const idOf = (value) => (value ? String(value._id || value) : null);
 
-// Reads the user id from the token if there is one, without requiring a login.
+// Reads who is asking from the token, without requiring a login.
 // Applies the same checks as middleware/auth.js, so banned accounts and tokens
 // issued before a password change are treated as logged out.
-const optionalUserId = async (req) => {
+const optionalUser = async (req) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
     if (!token) return null;
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.userId).select('isBanned passwordChangedAt');
+    const user = await User.findById(decoded.userId).select('isBanned passwordChangedAt role');
     if (!user || user.isBanned) return null;
 
     if (
@@ -82,10 +82,15 @@ const optionalUserId = async (req) => {
       return null;
     }
 
-    return String(decoded.userId);
+    return { userId: String(decoded.userId), role: user.role };
   } catch (err) {
     return null;
   }
+};
+
+const optionalUserId = async (req) => {
+  const viewer = await optionalUser(req);
+  return viewer ? viewer.userId : null;
 };
 
 // Closes the live stream room when an auction is sold
@@ -131,10 +136,10 @@ const buildViewer = async (auction, userId) => {
   return viewer;
 };
 
-// GET ALL AUCTIONS
+// GET ALL AUCTIONS - sold auctions and auctions waiting for payment are not listed
 router.get('/', async (req, res) => {
   try {
-    const auctions = await Auction.find()
+    const auctions = await Auction.find({ status: { $nin: ['sold', 'awaiting_payment'] } })
       .populate('sellerId', SELLER_FIELDS)
       .populate('bids.bidderId', BIDDER_FIELDS)
       .sort({ createdAt: -1 });
@@ -280,7 +285,7 @@ router.delete('/:id/comments/:commentId', auth, async (req, res) => {
   }
 });
 
-// GET SINGLE AUCTION
+// GET SINGLE AUCTION - once sold, only the seller, the buyer and admins can open it
 router.get('/:id', async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
@@ -293,8 +298,21 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Auction not found' });
     }
 
+    const viewerUser = await optionalUser(req);
+    const userId = viewerUser ? viewerUser.userId : null;
+
+    if (auction.status === 'sold') {
+      const isParty =
+        !!userId && (userId === idOf(auction.sellerId) || userId === idOf(auction.winnerId));
+      const isAdmin = !!viewerUser && viewerUser.role === 'admin';
+
+      if (!isParty && !isAdmin) {
+        return res.status(404).json({ error: 'Auction not found' });
+      }
+    }
+
     const result = auction.toObject();
-    result.viewer = await buildViewer(auction, await optionalUserId(req));
+    result.viewer = await buildViewer(auction, userId);
 
     res.json(result);
   } catch (err) {
