@@ -238,7 +238,7 @@ router.put('/me/bank', auth, async (req, res) => {
 });
 
 // PUBLIC PROFILE - never includes email, phone or bank details.
-// Sold items are never listed here, only counted.
+// Sold items are never listed here, only counted, and reviews do not say which item they were for.
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -267,12 +267,12 @@ router.get('/:id', async (req, res) => {
       Auction.countDocuments({ sellerId: id, status: 'active' }),
       Gig.countDocuments({ sellerId: id, status: 'active' }),
       Review.find({ sellerId: id })
+        .select('rating comment createdAt reviewerId')
         .populate('reviewerId', 'fullName')
-        .populate('auctionId', 'title')
         .sort({ createdAt: -1 })
         .limit(20),
       Auction.find({ sellerId: id, status: 'active' })
-        .select('title images currentBid startingBid winningBid status endsAt isLive')
+        .select('title images currentBid startingBid status endsAt isLive')
         .sort({ createdAt: -1 })
         .limit(12)
     ]);
