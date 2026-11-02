@@ -6,6 +6,90 @@ import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
 import API from '@/lib/api';
 
+const MAX_IMAGE_SIDE = 1280;
+const JPEG_QUALITY = 0.8;
+const MAX_ORIGINAL_BYTES = 15 * 1024 * 1024;
+const UPLOAD_TIMEOUT_MS = 45000;
+const MIN_STARTING_PRICE = 100;
+
+// Shrinks the photo in the browser before it is uploaded
+const compressImage = (file: File): Promise<Blob> =>
+  new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const img = new Image();
+
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+
+      const scale = Math.min(1, MAX_IMAGE_SIDE / Math.max(img.width, img.height));
+      const width = Math.round(img.width * scale);
+      const height = Math.round(img.height * scale);
+
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        reject(new Error('Canvas is not supported'));
+        return;
+      }
+
+      // White background so transparent PNGs do not turn black
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(img, 0, 0, width, height);
+
+      canvas.toBlob(
+        (blob) => (blob ? resolve(blob) : reject(new Error('Could not compress the image'))),
+        'image/jpeg',
+        JPEG_QUALITY
+      );
+    };
+
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('Could not read the image'));
+    };
+
+    img.src = objectUrl;
+  });
+
+const uploadToImgbb = async (blob: Blob): Promise<string> => {
+  const body = new FormData();
+  body.append('image', blob, 'photo.jpg');
+  body.append('key', process.env.NEXT_PUBLIC_IMGBB_API_KEY || '');
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
+
+  try {
+    const response = await fetch('https://api.imgbb.com/1/upload', {
+      method: 'POST',
+      body,
+      signal: controller.signal,
+    });
+    const data = await response.json();
+
+    if (!data.success || !data.data || !data.data.url) {
+      throw new Error('Upload failed');
+    }
+
+    return String(data.data.url).replace(/^http:\/\//i, 'https://');
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+// One automatic retry, because mobile connections drop often
+const uploadWithRetry = async (blob: Blob): Promise<string> => {
+  try {
+    return await uploadToImgbb(blob);
+  } catch (firstErr) {
+    return await uploadToImgbb(blob);
+  }
+};
+
 export default function CreateAuction() {
   const router = useRouter();
   const [checkingAuth, setCheckingAuth] = useState(true);
@@ -32,28 +116,28 @@ export default function CreateAuction() {
 
   const handleImageUpload = async (e) => {
     const file = e.target.files?.[0];
+    // Lets the same file be chosen again after a failed attempt
+    e.target.value = '';
     if (!file) return;
 
+    if (!file.type.startsWith('image/')) {
+      setError('Please choose an image file');
+      return;
+    }
+    if (file.size > MAX_ORIGINAL_BYTES) {
+      setError('That photo is too large. Please choose one under 15 MB.');
+      return;
+    }
+
+    setError('');
     setUploadingImage(true);
     try {
-      const imgbbFormData = new FormData();
-      imgbbFormData.append('image', file);
-      imgbbFormData.append('key', process.env.NEXT_PUBLIC_IMGBB_API_KEY || '');
-
-      const response = await fetch('https://api.imgbb.com/1/upload', {
-        method: 'POST',
-        body: imgbbFormData,
-      });
-
-      const data = await response.json();
-      if (data.success) {
-        setFormData({ ...formData, image: data.data.url });
-      } else {
-        setError('Failed to upload image');
-      }
+      const blob = await compressImage(file);
+      const url = await uploadWithRetry(blob);
+      setFormData((prev) => ({ ...prev, image: url }));
     } catch (err) {
       console.error('Upload error:', err);
-      setError('Failed to upload image');
+      setError('Could not upload the photo. Check your connection and try again, or use a JPG or PNG.');
     } finally {
       setUploadingImage(false);
     }
@@ -62,6 +146,18 @@ export default function CreateAuction() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+
+    if (!formData.image) {
+      setError('Please add a product photo');
+      return;
+    }
+
+    const price = Number(formData.startingPrice);
+    if (!Number.isInteger(price) || price < MIN_STARTING_PRICE) {
+      setError('Starting price must be a whole number of at least ₦100');
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -70,8 +166,8 @@ export default function CreateAuction() {
         description: formData.description,
         category: formData.category || 'Other',
         condition: formData.condition || 'New',
-        startingBid: Number(formData.startingPrice),
-        images: formData.image ? [formData.image] : ['https://via.placeholder.com/400x300?text=Product+Image'],
+        startingBid: price,
+        images: [formData.image],
       });
       router.push('/auctions');
     } catch (err: any) {
@@ -156,6 +252,7 @@ export default function CreateAuction() {
               value={formData.title}
               onChange={(e) => setFormData({ ...formData, title: e.target.value })}
               placeholder="What are you selling?"
+              maxLength={150}
               required
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
@@ -168,6 +265,7 @@ export default function CreateAuction() {
               onChange={(e) => setFormData({ ...formData, description: e.target.value })}
               placeholder="Describe your item in detail..."
               rows={5}
+              maxLength={5000}
               required
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
@@ -211,7 +309,9 @@ export default function CreateAuction() {
               type="number"
               value={formData.startingPrice}
               onChange={(e) => setFormData({ ...formData, startingPrice: e.target.value })}
-              placeholder="0.00"
+              placeholder="e.g. 5000"
+              min={MIN_STARTING_PRICE}
+              step={1}
               required
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
             />

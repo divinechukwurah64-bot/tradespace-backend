@@ -6,6 +6,9 @@ import Link from 'next/link';
 import { authAPI } from '@/lib/api';
 import { Mail, Lock, User, Phone } from 'lucide-react';
 
+const MIN_PASSWORD_LENGTH = 8;
+const MAX_PASSWORD_LENGTH = 128;
+
 export default function Register() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
@@ -34,10 +37,24 @@ export default function Register() {
       return;
     }
 
+    if (formData.password.length < MIN_PASSWORD_LENGTH) {
+      setError('Password must be at least 8 characters');
+      return;
+    }
+
+    if (formData.password.length > MAX_PASSWORD_LENGTH) {
+      setError('Password is too long');
+      return;
+    }
+
     setLoading(true);
 
     try {
-      const response = await authAPI.register({ ...formData, acceptedTerms: true });
+      const response = await authAPI.register({
+        ...formData,
+        email: formData.email.trim(),
+        acceptedTerms: true,
+      });
       localStorage.setItem('token', response.data.token);
       localStorage.setItem('user', JSON.stringify(response.data.user));
       window.location.href = '/auctions';
@@ -121,10 +138,13 @@ export default function Register() {
                 value={formData.password}
                 onChange={handleChange}
                 required
+                minLength={MIN_PASSWORD_LENGTH}
+                maxLength={MAX_PASSWORD_LENGTH}
                 className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-blue-500 text-black bg-white"
                 placeholder="••••••••"
               />
             </div>
+            <p className="text-xs text-gray-500 mt-1">At least 8 characters</p>
           </div>
 
           <div className="flex items-start gap-3 pt-2">

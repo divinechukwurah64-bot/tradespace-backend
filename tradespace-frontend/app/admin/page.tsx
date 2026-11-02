@@ -61,6 +61,10 @@ type AdminTransaction = {
   disputeStatus: string;
   disputeReason?: string;
   disputeNotes?: string;
+  disputeOpenedAt?: string | null;
+  sellerComplaintReason?: string;
+  sellerComplaintNote?: string;
+  sellerComplaintAt?: string | null;
   createdAt: string;
   buyerId?: { fullName?: string; email?: string } | null;
   sellerId?: { fullName?: string; email?: string } | null;
@@ -609,9 +613,13 @@ export default function AdminPage() {
                         End
                       </button>
                     )}
-                    <button style={s.btn('#dc2626')} onClick={() => removeAuction(a)}>
-                      Remove
-                    </button>
+                    {a.status === 'sold' ? (
+                      <div style={s.small}>Handle this sale from the Transactions tab</div>
+                    ) : (
+                      <button style={s.btn('#dc2626')} onClick={() => removeAuction(a)}>
+                        Remove
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -731,7 +739,17 @@ export default function AdminPage() {
                       </td>
                       <td style={s.td}>
                         <span style={s.badge(disputeColor(t.disputeStatus))}>{t.disputeStatus}</span>
-                        {t.disputeReason && <div style={s.small}>{t.disputeReason}</div>}
+                        {t.disputeOpenedAt && (
+                          <div style={s.small}>
+                            <strong>Buyer:</strong> {t.disputeReason}
+                          </div>
+                        )}
+                        {t.sellerComplaintAt && (
+                          <div style={s.small}>
+                            <strong>Seller:</strong> {t.sellerComplaintReason}
+                            {t.sellerComplaintNote ? ` - ${t.sellerComplaintNote}` : ''}
+                          </div>
+                        )}
                         {t.disputeNotes && <div style={s.small}>{t.disputeNotes}</div>}
                       </td>
                       <td style={s.td}>{formatDate(t.createdAt)}</td>
@@ -780,11 +798,19 @@ export default function AdminPage() {
                   )}" returns to the seller as expired.`
                 : `${naira(resolve.tx.sellerPayout)} is sent to ${resolve.tx.sellerId?.fullName || 'the seller'}.`}
             </p>
-            {resolve.tx.disputeReason && (
+            {resolve.tx.disputeOpenedAt && (
               <p style={{ fontSize: 13, color: '#6b7280', marginTop: 8 }}>
                 Buyer reported: {resolve.tx.disputeReason}
-                {resolve.tx.disputeNotes ? ` - ${resolve.tx.disputeNotes}` : ''}
               </p>
+            )}
+            {resolve.tx.sellerComplaintAt && (
+              <p style={{ fontSize: 13, color: '#6b7280', marginTop: 8 }}>
+                Seller reported: {resolve.tx.sellerComplaintReason}
+                {resolve.tx.sellerComplaintNote ? ` - ${resolve.tx.sellerComplaintNote}` : ''}
+              </p>
+            )}
+            {resolve.tx.disputeNotes && (
+              <p style={{ fontSize: 13, color: '#6b7280', marginTop: 8 }}>Notes: {resolve.tx.disputeNotes}</p>
             )}
             <textarea
               style={s.textarea}

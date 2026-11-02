@@ -17,6 +17,13 @@ const DISPUTE_REASONS = [
   'Other',
 ];
 
+const SELLER_COMPLAINT_REASONS = [
+  'Buyer is not responding',
+  'Buyer refused the item',
+  'Buyer is making a false claim',
+  'Other',
+];
+
 const formatLeft = (ms: number) => {
   if (ms <= 0) return '0h 0m';
   const days = Math.floor(ms / 86400000);
@@ -24,6 +31,44 @@ const formatLeft = (ms: number) => {
   const minutes = Math.floor((ms % 3600000) / 60000);
   return days > 0 ? `${days}d ${hours}h ${minutes}m` : `${hours}h ${minutes}m`;
 };
+
+// Shows the photo, or a grey box if there is none or it fails to load
+function Photo({
+  src,
+  alt,
+  className,
+  eager,
+}: {
+  src: string | null;
+  alt: string;
+  className: string;
+  eager?: boolean;
+}) {
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [src]);
+
+  if (!src || failed) {
+    return (
+      <div className={`${className} bg-gray-200 flex items-center justify-center text-gray-500 text-sm`}>
+        No photo
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      loading={eager ? 'eager' : 'lazy'}
+      decoding="async"
+      onError={() => setFailed(true)}
+      className={className}
+    />
+  );
+}
 
 export default function AuctionDetail() {
   const params = useParams();
@@ -61,6 +106,9 @@ export default function AuctionDetail() {
   const [disputeOpen, setDisputeOpen] = useState(false);
   const [disputeReason, setDisputeReason] = useState(DISPUTE_REASONS[0]);
   const [disputeNote, setDisputeNote] = useState('');
+  const [complaintOpen, setComplaintOpen] = useState(false);
+  const [complaintReason, setComplaintReason] = useState(SELLER_COMPLAINT_REASONS[0]);
+  const [complaintNote, setComplaintNote] = useState('');
 
   const fetchAuctionData = async () => {
     try {
@@ -225,10 +273,15 @@ export default function AuctionDetail() {
       return;
     }
 
+    const amount = Number(bidAmount);
+    if (!Number.isInteger(amount) || amount < 1) {
+      setBidError('Enter a whole number, for example 5000');
+      setBidLoading(false);
+      return;
+    }
+
     try {
-      await API.post(`/auctions/${auctionId}/bids`, {
-        amount: Number(bidAmount),
-      });
+      await API.post(`/auctions/${auctionId}/bids`, { amount });
       setBidAmount('');
       toast.success('Your bid was placed');
       await fetchAuctionData();
@@ -295,6 +348,7 @@ export default function AuctionDetail() {
       await fetchPayment();
     } catch (err: any) {
       toast.error(err.response?.data?.error || 'Could not confirm. Please try again.');
+      await fetchPayment();
     } finally {
       setPaymentBusy(false);
     }
@@ -314,6 +368,27 @@ export default function AuctionDetail() {
       await fetchPayment();
     } catch (err: any) {
       toast.error(err.response?.data?.error || 'Could not report the problem');
+      await fetchPayment();
+    } finally {
+      setPaymentBusy(false);
+    }
+  };
+
+  const handleSubmitComplaint = async (e: any) => {
+    e.preventDefault();
+    setPaymentBusy(true);
+    try {
+      await API.post(`/payments/auctions/${auctionId}/complaint`, {
+        reason: complaintReason,
+        note: complaintNote,
+      });
+      setComplaintOpen(false);
+      setComplaintNote('');
+      toast.success('Problem reported. The payment is on hold while our team looks into it.');
+      await fetchPayment();
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Could not report the problem');
+      await fetchPayment();
     } finally {
       setPaymentBusy(false);
     }
@@ -466,13 +541,67 @@ export default function AuctionDetail() {
   const isExpired = timeLeft === 'Auction Ended';
   const viewer = auction.viewer || {};
   const reopensLeft = Math.max(0, MAX_REOPENS - (auction.reopenCount || 0));
-  const images = auction.images && auction.images.length > 0
-    ? auction.images
-    : ['https://via.placeholder.com/500x500?text=No+Image'];
+  const images: string[] = auction.images && auction.images.length > 0 ? auction.images : [];
+  const mainImage = images[imageIndex] || images[0] || null;
 
   const releaseDate = payment?.autoReleaseAt
     ? new Date(payment.autoReleaseAt).toLocaleDateString()
     : '';
+
+  const windowLeftMs = payment?.windowEndsAt
+    ? new Date(payment.windowEndsAt).getTime() - Date.now()
+    : 0;
+  const windowOpen = windowLeftMs > 0;
+
+  // The seller's "report a problem" button and form
+  const complaintSection = (buttonLabel: string) =>
+    !complaintOpen ? (
+      <button
+        onClick={() => setComplaintOpen(true)}
+        className="w-full bg-white text-red-600 border border-red-300 py-3 rounded-lg font-bold hover:bg-red-50 transition"
+      >
+        {buttonLabel}
+      </button>
+    ) : (
+      <form onSubmit={handleSubmitComplaint}>
+        <label className="block text-sm font-bold text-gray-700 mb-2">What went wrong?</label>
+        <select
+          value={complaintReason}
+          onChange={(e) => setComplaintReason(e.target.value)}
+          className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500 text-black bg-white"
+        >
+          {SELLER_COMPLAINT_REASONS.map((r) => (
+            <option key={r} value={r}>
+              {r}
+            </option>
+          ))}
+        </select>
+        <textarea
+          value={complaintNote}
+          onChange={(e) => setComplaintNote(e.target.value)}
+          placeholder="Tell us what happened (optional)"
+          rows={3}
+          maxLength={500}
+          className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500 text-black bg-white"
+        />
+        <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={() => setComplaintOpen(false)}
+            className="flex-1 border border-gray-300 text-gray-700 py-2 rounded-lg font-semibold hover:bg-gray-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={paymentBusy}
+            className="flex-1 bg-red-600 text-white py-2 rounded-lg font-bold hover:bg-red-700 disabled:bg-gray-400"
+          >
+            {paymentBusy ? 'Sending...' : 'Report problem'}
+          </button>
+        </div>
+      </form>
+    );
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -511,10 +640,11 @@ export default function AuctionDetail() {
                   PAYMENT PENDING
                 </span>
               )}
-              <img
-                src={images[imageIndex]}
+              <Photo
+                src={mainImage}
                 alt={auction.title}
                 className="w-full h-64 md:h-80 object-cover"
+                eager
               />
 
               {images.length > 1 && (
@@ -527,7 +657,7 @@ export default function AuctionDetail() {
                         idx === imageIndex ? 'border-blue-600' : 'border-gray-300'
                       }`}
                     >
-                      <img src={img} alt={`View ${idx + 1}`} className="w-full h-full object-cover" />
+                      <Photo src={img} alt={`View ${idx + 1}`} className="w-full h-full object-cover" />
                     </button>
                   ))}
                 </div>
@@ -688,80 +818,93 @@ export default function AuctionDetail() {
               <div className="bg-white rounded-lg shadow p-6 mb-6">
                 <h3 className="font-bold text-black mb-2">Your payment</h3>
 
-                {payment.status === 'held' && payment.disputeStatus === 'filed' && (
-                  <p className="text-sm text-gray-700">
-                    You reported a problem ({payment.disputeReason}). Our team is reviewing it and your money stays
-                    safe until it is decided.
-                  </p>
-                )}
-
-                {payment.status === 'held' && payment.disputeStatus !== 'filed' && payment.payoutStatus === 'none' && (
+                {payment.status === 'held' && payment.payoutStatus === 'none' && (
                   <>
-                    <p className="text-sm text-gray-700 mb-4">
-                      Your payment is held safely. Once the item arrives, confirm it to pay the seller.
-                      {releaseDate && ` If you do nothing, the seller is paid automatically on ${releaseDate}.`}
-                    </p>
+                    {payment.disputeStatus === 'filed' && payment.buyerReported && (
+                      <p className="text-sm text-gray-700">
+                        You reported a problem ({payment.buyerReportReason}). Our team is reviewing it and your money
+                        stays safe until it is decided.
+                        {payment.sellerComplained &&
+                          ` The seller has also reported a problem with this sale (${payment.sellerComplaintReason}).`}
+                      </p>
+                    )}
 
-                    {!disputeOpen ? (
-                      <div className="flex flex-col gap-3">
-                        <button
-                          onClick={handleConfirmReceived}
-                          disabled={paymentBusy}
-                          className="w-full bg-green-600 text-white py-3 rounded-lg font-bold hover:bg-green-700 disabled:bg-gray-400 transition"
-                        >
-                          I received the item
-                        </button>
-                        <button
-                          onClick={() => setDisputeOpen(true)}
-                          className="w-full bg-white text-red-600 border border-red-300 py-3 rounded-lg font-bold hover:bg-red-50 transition"
-                        >
-                          Report a problem
-                        </button>
-                      </div>
-                    ) : (
-                      <form onSubmit={handleSubmitDispute}>
-                        <label className="block text-sm font-bold text-gray-700 mb-2">What went wrong?</label>
-                        <select
-                          value={disputeReason}
-                          onChange={(e) => setDisputeReason(e.target.value)}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500 text-black bg-white"
-                        >
-                          {DISPUTE_REASONS.map((r) => (
-                            <option key={r} value={r}>
-                              {r}
-                            </option>
-                          ))}
-                        </select>
-                        <textarea
-                          value={disputeNote}
-                          onChange={(e) => setDisputeNote(e.target.value)}
-                          placeholder="Tell us what happened (optional)"
-                          rows={3}
-                          maxLength={500}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500 text-black bg-white"
-                        />
-                        <div className="flex gap-3">
+                    {payment.disputeStatus === 'filed' && !payment.buyerReported && (
+                      <p className="text-sm text-gray-700 mb-4">
+                        The seller reported a problem with this sale ({payment.sellerComplaintReason}). Your money is
+                        on hold while our team looks into it. If you have the item, confirm it below to close this. If
+                        something is wrong, report it.
+                      </p>
+                    )}
+
+                    {payment.disputeStatus !== 'filed' && (
+                      <p className="text-sm text-gray-700 mb-4">
+                        Your payment is held safely. Once the item arrives, confirm it to pay the seller.
+                        {releaseDate && ` If you do nothing, the seller is paid automatically on ${releaseDate}.`}
+                      </p>
+                    )}
+
+                    {!(payment.disputeStatus === 'filed' && payment.buyerReported) &&
+                      (!disputeOpen ? (
+                        <div className="flex flex-col gap-3">
                           <button
-                            type="button"
-                            onClick={() => setDisputeOpen(false)}
-                            className="flex-1 border border-gray-300 text-gray-700 py-2 rounded-lg font-semibold hover:bg-gray-50"
+                            onClick={handleConfirmReceived}
+                            disabled={paymentBusy}
+                            className="w-full bg-green-600 text-white py-3 rounded-lg font-bold hover:bg-green-700 disabled:bg-gray-400 transition"
                           >
-                            Cancel
+                            I received the item
                           </button>
                           <button
-                            type="submit"
-                            disabled={paymentBusy}
-                            className="flex-1 bg-red-600 text-white py-2 rounded-lg font-bold hover:bg-red-700 disabled:bg-gray-400"
+                            onClick={() => setDisputeOpen(true)}
+                            className="w-full bg-white text-red-600 border border-red-300 py-3 rounded-lg font-bold hover:bg-red-50 transition"
                           >
-                            {paymentBusy ? 'Sending...' : 'Report problem'}
+                            Report a problem
                           </button>
                         </div>
-                      </form>
-                    )}
+                      ) : (
+                        <form onSubmit={handleSubmitDispute}>
+                          <label className="block text-sm font-bold text-gray-700 mb-2">What went wrong?</label>
+                          <select
+                            value={disputeReason}
+                            onChange={(e) => setDisputeReason(e.target.value)}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500 text-black bg-white"
+                          >
+                            {DISPUTE_REASONS.map((r) => (
+                              <option key={r} value={r}>
+                                {r}
+                              </option>
+                            ))}
+                          </select>
+                          <textarea
+                            value={disputeNote}
+                            onChange={(e) => setDisputeNote(e.target.value)}
+                            placeholder="Tell us what happened (optional)"
+                            rows={3}
+                            maxLength={500}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500 text-black bg-white"
+                          />
+                          <div className="flex gap-3">
+                            <button
+                              type="button"
+                              onClick={() => setDisputeOpen(false)}
+                              className="flex-1 border border-gray-300 text-gray-700 py-2 rounded-lg font-semibold hover:bg-gray-50"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="submit"
+                              disabled={paymentBusy}
+                              className="flex-1 bg-red-600 text-white py-2 rounded-lg font-bold hover:bg-red-700 disabled:bg-gray-400"
+                            >
+                              {paymentBusy ? 'Sending...' : 'Report problem'}
+                            </button>
+                          </div>
+                        </form>
+                      ))}
                   </>
                 )}
 
-                {payment.status === 'held' && payment.disputeStatus !== 'filed' && payment.payoutStatus !== 'none' && (
+                {payment.status === 'held' && payment.payoutStatus !== 'none' && (
                   <p className="text-sm text-gray-700">You confirmed the item. The seller is being paid.</p>
                 )}
 
@@ -779,29 +922,56 @@ export default function AuctionDetail() {
               <div className="bg-white rounded-lg shadow p-6 mb-6">
                 <h3 className="font-bold text-black mb-2">Your payout</h3>
 
-                {payment.status === 'held' && payment.disputeStatus === 'filed' && (
-                  <p className="text-sm text-gray-700">
-                    The buyer reported a problem. Our team is reviewing it and the payment is on hold.
-                  </p>
-                )}
-
-                {payment.status === 'held' && payment.disputeStatus !== 'filed' && payment.payoutStatus === 'none' && (
-                  <p className="text-sm text-gray-700">
-                    The buyer has paid and the money is held safely. Get the item to them. You receive ₦
-                    {Number(payment.sellerPayout).toLocaleString()} when they confirm
-                    {releaseDate ? `, or automatically on ${releaseDate}` : ''}.
-                  </p>
+                {payment.status === 'held' && payment.payoutStatus === 'none' && (
+                  <>
+                    {payment.disputeStatus === 'filed' ? (
+                      <>
+                        {payment.sellerComplained ? (
+                          <p className="text-sm text-gray-700">
+                            You reported a problem with this sale ({payment.sellerComplaintReason}). Our team is
+                            reviewing it and the payment is on hold.
+                            {payment.buyerReported &&
+                              ` The buyer has also reported a problem (${payment.buyerReportReason}).`}
+                          </p>
+                        ) : (
+                          <>
+                            <p className="text-sm text-gray-700 mb-4">
+                              The buyer reported a problem ({payment.buyerReportReason}). Our team is reviewing it and
+                              the payment is on hold. You can add your side.
+                            </p>
+                            {complaintSection('Add your side')}
+                          </>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-sm text-gray-700">
+                          The buyer has paid and the money is held safely. Get the item to them. You receive ₦
+                          {Number(payment.sellerPayout).toLocaleString()} when they confirm
+                          {releaseDate ? `, or automatically on ${releaseDate}` : ''}.
+                        </p>
+                        {windowOpen && (
+                          <div className="mt-4">
+                            <p className="text-xs text-gray-500 mb-2">
+                              If something goes wrong with this sale, you can report it for another{' '}
+                              {formatLeft(windowLeftMs)}.
+                            </p>
+                            {complaintSection('Report a problem with this sale')}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </>
                 )}
 
                 {payment.status === 'held' &&
-                  payment.disputeStatus !== 'filed' &&
                   (payment.payoutStatus === 'queued' || payment.payoutStatus === 'processing') && (
                     <p className="text-sm text-gray-700">
                       Your payout of ₦{Number(payment.sellerPayout).toLocaleString()} is on its way to your bank.
                     </p>
                   )}
 
-                {payment.status === 'held' && payment.disputeStatus !== 'filed' && payment.payoutStatus === 'failed' && (
+                {payment.status === 'held' && payment.payoutStatus === 'failed' && (
                   <p className="text-sm text-gray-700">
                     We hit a problem sending your payout. Our team has been told and will sort it out.
                   </p>
@@ -937,9 +1107,11 @@ export default function AuctionDetail() {
                   type="number"
                   value={bidAmount}
                   onChange={(e) => setBidAmount(e.target.value)}
-                  placeholder={`Minimum: ₦${(auction.currentBid || auction.startingBid)?.toLocaleString()}`}
+                  placeholder={`Minimum: ₦${((auction.currentBid || auction.startingBid) + 1)?.toLocaleString()}`}
+                  min={(auction.currentBid || auction.startingBid) + 1}
+                  step={1}
                   required
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500 text-black bg-white"
                 />
                 <button
                   type="submit"

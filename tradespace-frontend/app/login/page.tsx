@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { authAPI } from '@/lib/api';
 import { Mail, Lock } from 'lucide-react';
@@ -8,10 +8,19 @@ import { Mail, Lock } from 'lucide-react';
 export default function Login() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [sessionEnded, setSessionEnded] = useState(false);
   const [formData, setFormData] = useState({
     email: '',
     password: '',
   });
+
+  // lib/api.ts sends people here with ?expired=1 when their session ended
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('expired') === '1') {
+      setSessionEnded(true);
+    }
+  }, []);
 
   const handleChange = (e: any) => {
     setFormData({
@@ -23,10 +32,14 @@ export default function Login() {
   const handleSubmit = async (e: any) => {
     e.preventDefault();
     setError('');
+    setSessionEnded(false);
     setLoading(true);
 
     try {
-      const response = await authAPI.login(formData);
+      const response = await authAPI.login({
+        email: formData.email.trim(),
+        password: formData.password,
+      });
       localStorage.setItem('token', response.data.token);
       localStorage.setItem('user', JSON.stringify(response.data.user));
       window.location.href = '/auctions';
@@ -44,6 +57,12 @@ export default function Login() {
           <h1 className="text-3xl font-bold text-black">TradeSpace</h1>
           <p className="text-gray-600 mt-2">Sign in to your account</p>
         </div>
+
+        {sessionEnded && !error && (
+          <div className="bg-blue-50 border border-blue-200 text-blue-700 px-4 py-3 rounded-lg mb-6 text-sm">
+            Your session has ended. Please sign in again.
+          </div>
+        )}
 
         {error && (
           <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-6 text-sm">

@@ -18,6 +18,30 @@ const Stars = ({ value, size = 'w-5 h-5' }: { value: number; size?: string }) =>
   </div>
 );
 
+// Shows the photo, or a grey box if there is none or it fails to load
+function Thumb({ src, alt }: { src: string | null; alt: string }) {
+  const [failed, setFailed] = useState(false);
+
+  if (!src || failed) {
+    return (
+      <div className="w-full h-full flex items-center justify-center text-gray-500 text-xs">
+        No photo
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      loading="lazy"
+      decoding="async"
+      onError={() => setFailed(true)}
+      className="w-full h-full object-cover"
+    />
+  );
+}
+
 export default function UserProfile() {
   const params = useParams();
   const userId = params.id as string;
@@ -134,7 +158,7 @@ export default function UserProfile() {
 
         <h2 className="text-xl font-bold text-black mb-4">Listings</h2>
         {profile.listings.length === 0 ? (
-          <p className="text-gray-500 mb-8">No listings yet.</p>
+          <p className="text-gray-500 mb-8">No active listings.</p>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 mb-8">
             {profile.listings.map((l: any) => (
@@ -144,24 +168,17 @@ export default function UserProfile() {
                 className="bg-white rounded-lg shadow overflow-hidden hover:shadow-lg transition block"
               >
                 <div className="relative h-36 bg-gray-200">
-                  {l.images && l.images[0] && (
-                    <img src={l.images[0]} alt={l.title} className="w-full h-full object-cover" />
-                  )}
+                  <Thumb src={l.images && l.images[0] ? l.images[0] : null} alt={l.title} />
                   {l.isLive && (
                     <span className="absolute top-2 left-2 bg-red-600 text-white text-xs font-bold px-2 py-1 rounded-full">
                       LIVE
-                    </span>
-                  )}
-                  {l.status === 'sold' && (
-                    <span className="absolute top-2 right-2 bg-green-600 text-white text-xs font-bold px-2 py-1 rounded-full">
-                      SOLD
                     </span>
                   )}
                 </div>
                 <div className="p-3">
                   <p className="font-semibold text-black truncate">{l.title}</p>
                   <p className="text-lg font-bold text-blue-600">
-                    ₦{Number(l.status === 'sold' ? l.winningBid : l.currentBid || l.startingBid).toLocaleString()}
+                    ₦{Number(l.currentBid || l.startingBid).toLocaleString()}
                   </p>
                 </div>
               </Link>
@@ -190,9 +207,6 @@ export default function UserProfile() {
                   <span className="text-xs text-gray-500">{new Date(r.createdAt).toLocaleDateString()}</span>
                 </div>
                 {r.comment && <p className="text-gray-700 text-sm mt-2 break-words">{r.comment}</p>}
-                {r.auctionId?.title && (
-                  <p className="text-xs text-gray-500 mt-2">Item: {r.auctionId.title}</p>
-                )}
               </div>
             ))}
           </div>
