@@ -12,6 +12,9 @@ const AUTO_RELEASE_MS = 7 * 24 * 60 * 60 * 1000;
 const PAYOUT_RETRY_MS = 30 * 60 * 1000;
 const MAX_PAYOUT_ATTEMPTS = 60;
 
+// A payment stuck in "captured" for longer than this is treated as an interrupted settlement
+const CAPTURE_STALE_MS = 2 * 60 * 1000;
+
 const money = (n) => `₦${Number(n).toLocaleString()}`;
 const idOf = (value) => (value ? String(value._id || value) : null);
 
@@ -46,6 +49,97 @@ const refundSafely = async (tx, reason) => {
   return tx;
 };
 
+// Second half of settling a payment. The auction is marked sold first, then the payment is
+// marked held. If the server stops in between, the payment stays "captured" and the recovery
+// job runs this again. Every step checks the current state, so running it twice is safe.
+const finishCaptured = async (claimed) => {
+  const flipped = await Auction.findOneAndUpdate(
+    {
+      _id: claimed.auctionId,
+      status: 'awaiting_payment',
+      winnerId: claimed.buyerId,
+      winningBid: claimed.amount
+    },
+    {
+      $set: {
+        status: 'sold',
+        paidAt: new Date(),
+        soldAt: new Date(),
+        paymentDueAt: null
+      }
+    },
+    { new: true }
+  );
+
+  let auction = flipped;
+
+  if (!flipped) {
+    // Either an earlier attempt already marked it sold for this buyer, or it really is not owed
+    const current = await Auction.findById(claimed.auctionId);
+    const sameSale =
+      !!current &&
+      current.status === 'sold' &&
+      idOf(current.winnerId) === idOf(claimed.buyerId) &&
+      Number(current.winningBid) === Number(claimed.amount);
+
+    // A second payment for an auction that another payment already settled is refunded.
+    // If two captured payments race, the one with the lowest id wins.
+    const otherPaid = sameSale
+      ? await Transaction.exists({
+          auctionId: claimed.auctionId,
+          _id: { $ne: claimed._id },
+          $or: [
+            { paymentStatus: { $in: ['held', 'released'] } },
+            { paymentStatus: 'captured', disputeStatus: { $ne: 'filed' }, _id: { $lt: claimed._id } }
+          ]
+        })
+      : false;
+
+    if (!sameSale || otherPaid) {
+      return refundSafely(claimed, 'the auction was no longer waiting for this payment');
+    }
+    auction = current;
+  }
+
+  const held = await Transaction.findOneAndUpdate(
+    { _id: claimed._id, paymentStatus: 'captured' },
+    {
+      $set: {
+        paymentStatus: 'held',
+        payoutStatus: 'none',
+        autoReleaseAt: new Date(Date.now() + AUTO_RELEASE_MS)
+      }
+    },
+    { new: true }
+  );
+
+  // Someone else finished it first. They send the notifications.
+  if (!held) return Transaction.findById(claimed._id);
+
+  await notify(held.sellerId, {
+    type: 'payment',
+    title: 'Payment received',
+    message: `${money(held.amount)} for "${auction.title}" is paid and held safely. Get the item to the buyer.`,
+    link: `/auctions/${auction._id}`
+  });
+  await notify(held.buyerId, {
+    type: 'payment',
+    title: 'Payment confirmed',
+    message: `Your ${money(held.amount)} payment for "${auction.title}" is held safely. The seller's contact details are now on the auction page.`,
+    link: `/auctions/${auction._id}`
+  });
+
+  return held;
+};
+
+// Checks the amount Paystack received, then finishes the sale
+const completeCapture = async (claimed, data) => {
+  if (data.currency !== 'NGN' || Number(data.amount) !== Math.round(claimed.amount * 100)) {
+    return refundSafely(claimed, 'the amount paid did not match the price');
+  }
+  return finishCaptured(claimed);
+};
+
 // Confirms a payment with Paystack and updates the auction. Safe to call more than once.
 const settleTransaction = async (reference) => {
   const tx = await Transaction.findOne({ paystackReference: reference });
@@ -64,46 +158,31 @@ const settleTransaction = async (reference) => {
   );
   if (!claimed) return Transaction.findById(tx._id);
 
-  if (data.currency !== 'NGN' || Number(data.amount) !== Math.round(claimed.amount * 100)) {
-    return refundSafely(claimed, 'the amount paid did not match the price');
+  return completeCapture(claimed, data);
+};
+
+// Recovery: payments that were claimed but never finished because the server stopped.
+// Payments flagged for a manual refund are left alone.
+const processStuckCaptures = async () => {
+  const stuck = await Transaction.find({
+    paymentStatus: 'captured',
+    disputeStatus: { $ne: 'filed' },
+    capturedAt: { $lte: new Date(Date.now() - CAPTURE_STALE_MS) }
+  }).limit(20);
+
+  for (const tx of stuck) {
+    try {
+      const data = await paystack.verifyTransaction(tx.paystackReference);
+      if (!data || data.status !== 'success') {
+        console.error(`Stuck payment ${tx.paystackReference} is not successful on Paystack`);
+        continue;
+      }
+      await completeCapture(tx, data);
+      console.log(`Recovered stuck payment ${tx.paystackReference}`);
+    } catch (err) {
+      console.error(`Could not recover payment ${tx.paystackReference}:`, err.message);
+    }
   }
-
-  const auction = await Auction.findById(claimed.auctionId);
-  const stillOwed =
-    auction &&
-    auction.status === 'awaiting_payment' &&
-    idOf(auction.winnerId) === idOf(claimed.buyerId) &&
-    Number(auction.winningBid) === Number(claimed.amount);
-
-  if (!stillOwed) {
-    return refundSafely(claimed, 'the auction was no longer waiting for this payment');
-  }
-
-  claimed.paymentStatus = 'held';
-  claimed.payoutStatus = 'none';
-  claimed.autoReleaseAt = new Date(Date.now() + AUTO_RELEASE_MS);
-  await claimed.save();
-
-  auction.status = 'sold';
-  auction.paidAt = new Date();
-  auction.soldAt = new Date();
-  auction.paymentDueAt = null;
-  await auction.save();
-
-  await notify(claimed.sellerId, {
-    type: 'payment',
-    title: 'Payment received',
-    message: `${money(claimed.amount)} for "${auction.title}" is paid and held safely. Get the item to the buyer.`,
-    link: `/auctions/${auction._id}`
-  });
-  await notify(claimed.buyerId, {
-    type: 'payment',
-    title: 'Payment confirmed',
-    message: `Your ${money(claimed.amount)} payment for "${auction.title}" is held safely. The seller's contact details are now on the auction page.`,
-    link: `/auctions/${auction._id}`
-  });
-
-  return claimed;
 };
 
 // ---------- Paying the seller ----------
@@ -284,6 +363,18 @@ const handleMissedPayment = async (auction) => {
   const defaulterId = idOf(auction.winnerId);
   const sellerId = idOf(auction.sellerId);
   const lostAmount = auction.winningBid;
+
+  // If the winner's money has already arrived, this is not a missed payment. Either the sale is
+  // being finished right now or the recovery job will finish it, so no strike and no reassigning.
+  const alreadyPaid = await Transaction.exists({
+    auctionId: auction._id,
+    buyerId: defaulterId,
+    $or: [
+      { paymentStatus: { $in: ['held', 'released'] } },
+      { paymentStatus: 'captured', disputeStatus: { $ne: 'filed' } }
+    ]
+  });
+  if (alreadyPaid) return;
 
   // Close any checkout they started, so a late payment gets refunded
   await Transaction.updateMany(
@@ -469,6 +560,8 @@ const runJobs = async () => {
   running = true;
 
   try {
+    // Recovery runs first, so a payment that is mid-settlement is never mistaken for an unpaid one
+    await processStuckCaptures();
     await processPaymentDeadlines();
     await processAutoReleases();
     await processPayouts();

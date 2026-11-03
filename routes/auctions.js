@@ -388,6 +388,9 @@ router.post('/', auth, async (req, res) => {
 });
 
 // PLACE BID - Auth required
+// The bid is saved with one atomic database update. The update only matches if the auction
+// is still active, still running, and the current price is still below the new amount.
+// Two bids at the same moment can no longer overwrite each other.
 router.post('/:id/bids', auth, async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
@@ -428,19 +431,44 @@ router.post('/:id/bids', auth, async (req, res) => {
       });
     }
 
-    const previousTop = (auction.bids || []).reduce(
+    // Atomic step. Returns the auction as it was just before this bid, or null if
+    // someone else got in first (or the auction closed in the meantime).
+    const before = await Auction.findOneAndUpdate(
+      {
+        _id: auction._id,
+        status: 'active',
+        endsAt: { $gt: new Date() },
+        sellerId: { $ne: req.user.userId },
+        $expr: { $lt: [{ $ifNull: ['$currentBid', '$startingBid'] }, amount] }
+      },
+      {
+        $set: { currentBid: amount },
+        $push: {
+          bids: {
+            bidderId: req.user.userId,
+            amount,
+            timestamp: new Date()
+          }
+        }
+      },
+      { new: false }
+    );
+
+    if (!before) {
+      const latest = await Auction.findById(auction._id).select('status endsAt currentBid startingBid');
+      if (!latest || latest.status !== 'active' || new Date() > new Date(latest.endsAt)) {
+        return res.status(400).json({ error: 'Auction has ended' });
+      }
+      const latestMinimum = latest.currentBid || latest.startingBid;
+      return res.status(409).json({
+        error: `Someone just bid higher. The bid must now be higher than ₦${latestMinimum.toLocaleString()}`
+      });
+    }
+
+    const previousTop = (before.bids || []).reduce(
       (top, b) => (!top || b.amount > top.amount ? b : top),
       null
     );
-
-    auction.currentBid = amount;
-    auction.bids.push({
-      bidderId: req.user.userId,
-      amount,
-      timestamp: new Date(),
-    });
-
-    await auction.save();
 
     if (previousTop && previousTop.bidderId && previousTop.bidderId.toString() !== req.user.userId) {
       notify(previousTop.bidderId, {
