@@ -43,19 +43,35 @@ const escapeHtml = (value) =>
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 
-// Reads the user id from the token if there is one, without requiring a login
-const optionalUserId = (req) => {
+// Reads who is asking from the token, without requiring a login.
+// A token issued before a password change counts as logged out, like in middleware/auth.js.
+// Banned people are still recognised, so they can write to support to appeal.
+const optionalUser = async (req) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
     if (!token) return null;
-    return jwt.verify(token, process.env.JWT_SECRET).userId;
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.userId).select('fullName email passwordChangedAt');
+    if (!user) return null;
+
+    if (
+      user.passwordChangedAt &&
+      decoded.iat < Math.floor(user.passwordChangedAt.getTime() / 1000)
+    ) {
+      return null;
+    }
+
+    return user;
   } catch (err) {
     return null;
   }
 };
 
 // Simple limit on how often one person can send things
+const HIT_WINDOW_MAX_MS = 60 * 60 * 1000;
 const hits = new Map();
+
 const limited = (key, max, windowMs) => {
   const now = Date.now();
   const recent = (hits.get(key) || []).filter((t) => now - t < windowMs);
@@ -67,6 +83,16 @@ const limited = (key, max, windowMs) => {
   hits.set(key, recent);
   return false;
 };
+
+// Clears old entries so the list does not grow forever
+setInterval(() => {
+  const cutoff = Date.now() - HIT_WINDOW_MAX_MS;
+  for (const [key, times] of hits) {
+    if (!times.length || times[times.length - 1] < cutoff) {
+      hits.delete(key);
+    }
+  }
+}, 10 * 60 * 1000).unref();
 
 // WHAT TO SHOW ON THE SUPPORT PAGE
 router.get('/info', (req, res) => {
@@ -94,19 +120,16 @@ router.post('/tickets', async (req, res) => {
     let name = '';
     let email = '';
 
-    const uid = optionalUserId(req);
-    if (uid) {
-      const user = await User.findById(uid).select('fullName email isBanned');
-      if (user) {
-        userId = user._id;
-        name = user.fullName;
-        email = user.email;
-      }
+    const user = await optionalUser(req);
+    if (user) {
+      userId = user._id;
+      name = user.fullName;
+      email = user.email;
     }
 
     if (!email) {
       email = String(req.body.email || '').trim().toLowerCase();
-      name = String(req.body.name || '').trim().slice(0, 80) || 'Guest';
+      name = String(req.body.name || '').replace(/\s+/g, ' ').trim().slice(0, 80) || 'Guest';
       if (!EMAIL.test(email) || email.length > 200) {
         return res.status(400).json({ error: 'Enter a valid email so we can reply to you' });
       }
