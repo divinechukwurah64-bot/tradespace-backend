@@ -33,6 +33,10 @@ const SELLER_COMPLAINT_REASONS = [
 ];
 
 const PAID_STATUSES = ['held', 'captured', 'released', 'refunded'];
+const LIVE_STATUSES = ['held', 'captured', 'released'];
+
+// A second checkout started within this time is treated as a double click
+const CHECKOUT_GUARD_MS = 15 * 1000;
 
 const money = (n) => `₦${Number(n).toLocaleString()}`;
 
@@ -69,12 +73,24 @@ const shapeSale = (tx, role) => {
   };
 };
 
-// The payment for an auction that the buyer has paid. Only the buyer or the seller may see it.
-const findPaidTransaction = (auctionId) =>
-  Transaction.findOne({
+// The paid transaction for an auction that belongs to this person (ownerFilter says how).
+// A live payment is preferred over a refunded one, so an extra payment that was refunded
+// never hides the real sale, and an old refunded sale never hides a new one.
+const findPaidTransaction = async (auctionId, ownerFilter) => {
+  const live = await Transaction.findOne({
     auctionId,
-    paymentStatus: { $in: ['held', 'released', 'refunded', 'captured'] }
+    ...ownerFilter,
+    paymentStatus: { $in: LIVE_STATUSES }
   }).sort({ capturedAt: -1, createdAt: -1 });
+
+  if (live) return live;
+
+  return Transaction.findOne({
+    auctionId,
+    ...ownerFilter,
+    paymentStatus: 'refunded'
+  }).sort({ capturedAt: -1, createdAt: -1 });
+};
 
 // PAYSTACK WEBHOOK - payments and payouts both report here
 router.post('/webhook', async (req, res) => {
@@ -143,6 +159,29 @@ router.post('/auctions/:id/initialize', auth, async (req, res) => {
       return res.status(400).json({ error: 'The payment deadline has passed' });
     }
 
+    // The money may already have arrived and still be being confirmed
+    const alreadyPaid = await Transaction.exists({
+      auctionId: auction._id,
+      buyerId: req.user.userId,
+      paymentStatus: { $in: LIVE_STATUSES }
+    });
+    if (alreadyPaid) {
+      return res.status(400).json({
+        error: 'Your payment has already been received and is being confirmed. Please refresh in a minute.'
+      });
+    }
+
+    // A double click or a second tab should not start a second checkout
+    const justStarted = await Transaction.exists({
+      auctionId: auction._id,
+      buyerId: req.user.userId,
+      paymentStatus: 'pending',
+      createdAt: { $gte: new Date(Date.now() - CHECKOUT_GUARD_MS) }
+    });
+    if (justStarted) {
+      return res.status(429).json({ error: 'A payment was just started. Please wait a few seconds and try again.' });
+    }
+
     const [buyer, seller] = await Promise.all([
       User.findById(req.user.userId).select('email'),
       User.findById(auction.sellerId).select('+paystackRecipientCode')
@@ -159,6 +198,13 @@ router.post('/auctions/:id/initialize', auth, async (req, res) => {
     if (!Number.isFinite(amount) || amount < 100) {
       return res.status(400).json({ error: 'Invalid amount' });
     }
+
+    // Older unfinished checkouts for this buyer are closed. Marked "failed" they can still be
+    // settled if the buyer pays one late, because the settle step accepts pending and failed.
+    await Transaction.updateMany(
+      { auctionId: auction._id, buyerId: req.user.userId, paymentStatus: 'pending' },
+      { $set: { paymentStatus: 'failed' } }
+    );
 
     const reference = `TS-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
 
@@ -276,16 +322,15 @@ router.get('/auctions/:id/status', auth, async (req, res) => {
       return res.status(400).json({ error: 'Invalid auction' });
     }
 
-    const tx = await findPaidTransaction(id);
+    const tx = await findPaidTransaction(id, {
+      $or: [{ buyerId: req.user.userId }, { sellerId: req.user.userId }]
+    });
     if (!tx) {
       return res.json({ payment: null });
     }
 
     const isBuyer = tx.buyerId.toString() === req.user.userId;
     const isSeller = tx.sellerId.toString() === req.user.userId;
-    if (!isBuyer && !isSeller) {
-      return res.status(403).json({ error: 'Not allowed to view this payment' });
-    }
 
     res.json({
       payment: {
@@ -319,8 +364,8 @@ router.post('/auctions/:id/confirm-received', auth, async (req, res) => {
       return res.status(400).json({ error: 'Invalid auction' });
     }
 
-    const tx = await findPaidTransaction(id);
-    if (!tx || tx.buyerId.toString() !== req.user.userId) {
+    const tx = await findPaidTransaction(id, { buyerId: req.user.userId });
+    if (!tx) {
       return res.status(404).json({ error: 'Payment not found' });
     }
 
@@ -405,8 +450,8 @@ router.post('/auctions/:id/dispute', auth, async (req, res) => {
       return res.status(400).json({ error: 'Your note cannot be longer than 500 characters' });
     }
 
-    const tx = await findPaidTransaction(id);
-    if (!tx || tx.buyerId.toString() !== req.user.userId) {
+    const tx = await findPaidTransaction(id, { buyerId: req.user.userId });
+    if (!tx) {
       return res.status(404).json({ error: 'Payment not found' });
     }
 
@@ -483,8 +528,8 @@ router.post('/auctions/:id/complaint', auth, async (req, res) => {
       return res.status(400).json({ error: 'Your note cannot be longer than 500 characters' });
     }
 
-    const tx = await findPaidTransaction(id);
-    if (!tx || tx.sellerId.toString() !== req.user.userId) {
+    const tx = await findPaidTransaction(id, { sellerId: req.user.userId });
+    if (!tx) {
       return res.status(404).json({ error: 'Payment not found' });
     }
 
