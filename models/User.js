@@ -23,6 +23,12 @@ const userSchema = new mongoose.Schema({
   isVerified: { type: Boolean, default: false },
   role: { type: String, enum: ['user', 'admin'], default: 'user' },
   isBanned: { type: Boolean, default: false },
+  // People this user does not want to hear from. Hidden from normal queries.
+  blockedUsers: {
+    type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    default: [],
+    select: false
+  },
   acceptedTermsAt: { type: Date, default: null },
   passwordChangedAt: { type: Date, default: null },
   passwordResetTokenHash: { type: String, default: null, select: false },
