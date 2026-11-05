@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, Star, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, Star, ShieldCheck, MessageCircle } from 'lucide-react';
 import API from '@/lib/api';
 
 const Stars = ({ value, size = 'w-5 h-5' }: { value: number; size?: string }) => (
@@ -49,6 +49,8 @@ export default function UserProfile() {
   const [profile, setProfile] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [myId, setMyId] = useState<string | null>(null);
+  const [loggedIn, setLoggedIn] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -67,6 +69,30 @@ export default function UserProfile() {
     };
     load();
   }, [userId]);
+
+  // Who is looking, so the Message button is not shown on your own profile
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (!token) {
+      setLoggedIn(false);
+      setMyId(null);
+      return;
+    }
+    setLoggedIn(true);
+
+    let cancelled = false;
+    API.get('/auth/me')
+      .then((res) => {
+        if (!cancelled) setMyId(String(res.data._id));
+      })
+      .catch(() => {
+        // the button just stays hidden
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   if (loading) {
     return (
@@ -90,6 +116,7 @@ export default function UserProfile() {
   }
 
   const stats = profile.stats;
+  const isMe = !!myId && myId === String(userId);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -100,26 +127,54 @@ export default function UserProfile() {
             Back to Auctions
           </Link>
 
-          <div className="flex items-center gap-5">
-            {profile.profileImage ? (
-              <img
-                src={profile.profileImage}
-                alt={profile.fullName}
-                className="w-20 h-20 rounded-full object-cover"
-              />
-            ) : (
-              <div className="w-20 h-20 bg-gradient-to-br from-blue-600 to-blue-800 rounded-full flex items-center justify-center text-white text-3xl font-bold">
-                {profile.fullName?.[0]?.toUpperCase() || 'U'}
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-5">
+              {profile.profileImage ? (
+                <img
+                  src={profile.profileImage}
+                  alt={profile.fullName}
+                  className="w-20 h-20 rounded-full object-cover"
+                />
+              ) : (
+                <div className="w-20 h-20 bg-gradient-to-br from-blue-600 to-blue-800 rounded-full flex items-center justify-center text-white text-3xl font-bold">
+                  {profile.fullName?.[0]?.toUpperCase() || 'U'}
+                </div>
+              )}
+              <div>
+                <h1 className="text-3xl font-bold text-black flex items-center gap-2">
+                  {profile.fullName}
+                  {profile.isVerified && <ShieldCheck className="w-6 h-6 text-blue-600" />}
+                </h1>
+                <p className="text-gray-600 text-sm mt-1">
+                  Member since {new Date(profile.joinedAt).toLocaleDateString()}
+                </p>
               </div>
-            )}
+            </div>
+
             <div>
-              <h1 className="text-3xl font-bold text-black flex items-center gap-2">
-                {profile.fullName}
-                {profile.isVerified && <ShieldCheck className="w-6 h-6 text-blue-600" />}
-              </h1>
-              <p className="text-gray-600 text-sm mt-1">
-                Member since {new Date(profile.joinedAt).toLocaleDateString()}
-              </p>
+              {isMe ? (
+                <Link href="/profile" className="text-blue-600 hover:underline text-sm font-medium">
+                  Edit my profile
+                </Link>
+              ) : loggedIn ? (
+                myId && (
+                  <Link
+                    href={`/messages/${userId}`}
+                    className="inline-flex items-center gap-2 bg-blue-600 text-white px-5 py-2 rounded-lg font-bold hover:bg-blue-700"
+                  >
+                    <MessageCircle className="w-4 h-4" />
+                    Message
+                  </Link>
+                )
+              ) : (
+                <Link
+                  href="/login"
+                  className="inline-flex items-center gap-2 bg-blue-600 text-white px-5 py-2 rounded-lg font-bold hover:bg-blue-700"
+                >
+                  <MessageCircle className="w-4 h-4" />
+                  Sign in to message
+                </Link>
+              )}
             </div>
           </div>
 
@@ -172,6 +227,11 @@ export default function UserProfile() {
                   {l.isLive && (
                     <span className="absolute top-2 left-2 bg-red-600 text-white text-xs font-bold px-2 py-1 rounded-full">
                       LIVE
+                    </span>
+                  )}
+                  {l.status === 'awaiting_payment' && (
+                    <span className="absolute top-2 left-2 bg-yellow-500 text-white text-xs font-bold px-2 py-1 rounded-full">
+                      PAYMENT PENDING
                     </span>
                   )}
                 </div>

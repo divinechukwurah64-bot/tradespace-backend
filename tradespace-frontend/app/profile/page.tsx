@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { Camera, Star } from 'lucide-react';
 import API from '@/lib/api';
 import { confirmDialog, toast } from '@/lib/dialogs';
+import { PROFILE_PHOTO, prepareAndUploadImage } from '@/lib/image';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -229,31 +230,23 @@ export default function MyProfile() {
     e.target.value = '';
     if (!file) return;
 
-    if (!file.type.startsWith('image/')) {
-      toast.error('Please choose an image file');
-      return;
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      toast.error('The image must be smaller than 5MB');
-      return;
-    }
-
     setUploading(true);
     try {
-      const body = new FormData();
-      body.append('image', file);
-      body.append('key', process.env.NEXT_PUBLIC_IMGBB_API_KEY || '');
-
-      const upload = await fetch('https://api.imgbb.com/1/upload', { method: 'POST', body });
-      const data = await upload.json();
-      if (!data.success) {
-        throw new Error('Upload failed');
+      // Shrinks the picture to 512 px in the browser, then uploads it
+      let url: string;
+      try {
+        url = await prepareAndUploadImage(file, PROFILE_PHOTO);
+      } catch (err: any) {
+        toast.error(err.message || 'Could not upload your picture. Please try again.');
+        return;
       }
 
-      await savePatch({ profileImage: data.data.url });
-      toast.success('Profile picture updated');
-    } catch (err: any) {
-      toast.error(err.response?.data?.error || 'Could not upload your picture. Please try again.');
+      try {
+        await savePatch({ profileImage: url });
+        toast.success('Profile picture updated');
+      } catch (err: any) {
+        toast.error(err.response?.data?.error || 'Could not save your picture. Please try again.');
+      }
     } finally {
       setUploading(false);
     }
@@ -491,6 +484,11 @@ export default function MyProfile() {
                   {l.isLive && (
                     <span className="absolute top-2 left-2 bg-red-600 text-white text-xs font-bold px-2 py-1 rounded-full">
                       LIVE
+                    </span>
+                  )}
+                  {l.status === 'awaiting_payment' && (
+                    <span className="absolute top-2 left-2 bg-yellow-500 text-white text-xs font-bold px-2 py-1 rounded-full">
+                      PAYMENT PENDING
                     </span>
                   )}
                 </div>

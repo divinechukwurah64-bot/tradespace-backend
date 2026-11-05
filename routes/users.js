@@ -14,11 +14,13 @@ const IMAGE_URL = /^https:\/\/([a-z0-9-]+\.)?ibb\.co\/\S+$/i;
 const PHONE = /^[0-9+\-()\s]{6,20}$/;
 const ACCOUNT_NUMBER = /^\d{10}$/;
 
+const ATTEMPT_WINDOW_MS = 10 * 60 * 1000;
+
 // Limits how often one user can hit Paystack lookups or guess a password: 10 per 10 minutes
 const attempts = new Map();
 const allowAttempt = (userId) => {
   const now = Date.now();
-  const recent = (attempts.get(userId) || []).filter((t) => now - t < 10 * 60 * 1000);
+  const recent = (attempts.get(userId) || []).filter((t) => now - t < ATTEMPT_WINDOW_MS);
   if (recent.length >= 10) {
     attempts.set(userId, recent);
     return false;
@@ -27,6 +29,16 @@ const allowAttempt = (userId) => {
   attempts.set(userId, recent);
   return true;
 };
+
+// Clears old entries so the list does not grow forever
+setInterval(() => {
+  const cutoff = Date.now() - ATTEMPT_WINDOW_MS;
+  for (const [key, times] of attempts) {
+    if (!times.length || times[times.length - 1] < cutoff) {
+      attempts.delete(key);
+    }
+  }
+}, 10 * 60 * 1000).unref();
 
 const findBank = async (bankCode) => {
   const banks = await paystack.listBanks();
@@ -239,6 +251,7 @@ router.put('/me/bank', auth, async (req, res) => {
 
 // PUBLIC PROFILE - never includes email, phone or bank details.
 // Sold items are never listed here, only counted, and reviews do not say which item they were for.
+// Auctions waiting for payment are listed with their status, but never who the winner is.
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -271,7 +284,7 @@ router.get('/:id', async (req, res) => {
         .populate('reviewerId', 'fullName')
         .sort({ createdAt: -1 })
         .limit(20),
-      Auction.find({ sellerId: id, status: 'active' })
+      Auction.find({ sellerId: id, status: { $in: ['active', 'awaiting_payment'] } })
         .select('title images currentBid startingBid status endsAt isLive')
         .sort({ createdAt: -1 })
         .limit(12)

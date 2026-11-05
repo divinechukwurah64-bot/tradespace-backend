@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Clock, User, ArrowLeft, Heart, Share2, Trash2, Star } from 'lucide-react';
+import { Clock, User, ArrowLeft, Heart, Share2, Trash2, Star, MessageCircle } from 'lucide-react';
 import API from '@/lib/api';
 import { confirmDialog, toast } from '@/lib/dialogs';
 import ReportButton from '../../components/ReportButton';
@@ -544,6 +544,14 @@ export default function AuctionDetail() {
   const images: string[] = auction.images && auction.images.length > 0 ? auction.images : [];
   const mainImage = images[imageIndex] || images[0] || null;
 
+  // The other person in this sale, for the Message button in the contact box
+  const otherPartyId: string | null =
+    viewer.role === 'seller'
+      ? auction.winnerId?._id || null
+      : viewer.role === 'winner'
+      ? sellerId || null
+      : null;
+
   const releaseDate = payment?.autoReleaseAt
     ? new Date(payment.autoReleaseAt).toLocaleDateString()
     : '';
@@ -708,6 +716,16 @@ export default function AuctionDetail() {
                 </Link>
               ) : (
                 <p className="text-gray-600 mb-4">Unknown Seller</p>
+              )}
+
+              {sellerId && !isSellerLoggedIn && (
+                <Link
+                  href={currentUser ? `/messages/${sellerId}` : '/login'}
+                  className="mb-4 w-full inline-flex items-center justify-center gap-2 border border-blue-600 text-blue-600 py-2 rounded-lg font-bold hover:bg-blue-50 transition"
+                >
+                  <MessageCircle className="w-4 h-4" />
+                  {currentUser ? 'Message seller' : 'Sign in to message the seller'}
+                </Link>
               )}
 
               <div className="pt-4 border-t border-gray-200">
@@ -996,6 +1014,15 @@ export default function AuctionDetail() {
                 <p className="font-semibold text-black mb-2">{viewer.contact.phone || 'Not provided'}</p>
                 <p className="text-sm text-gray-600">Email</p>
                 <p className="font-semibold text-black break-all">{viewer.contact.email}</p>
+                {otherPartyId && (
+                  <Link
+                    href={`/messages/${otherPartyId}`}
+                    className="mt-4 w-full inline-flex items-center justify-center gap-2 bg-blue-600 text-white py-2 rounded-lg font-bold hover:bg-blue-700 transition"
+                  >
+                    <MessageCircle className="w-4 h-4" />
+                    Message {viewer.role === 'seller' ? 'the buyer' : 'the seller'}
+                  </Link>
+                )}
                 <p className="text-xs text-gray-500 mt-3">Only you and the other person can see this.</p>
               </div>
             )}
