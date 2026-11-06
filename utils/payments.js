@@ -132,11 +132,25 @@ const finishCaptured = async (claimed) => {
   return held;
 };
 
-// Checks the amount Paystack received, then finishes the sale
+// Checks the amount Paystack received, then finishes the sale.
+// Paystack may add its fee on top of the price. "requested_amount" is the price we asked for,
+// so that must equal the auction price exactly, and the buyer must have paid at least that much.
 const completeCapture = async (claimed, data) => {
-  if (data.currency !== 'NGN' || Number(data.amount) !== Math.round(claimed.amount * 100)) {
+  const expectedKobo = Math.round(claimed.amount * 100);
+  const paidKobo = Number(data.amount);
+  const requestedKobo =
+    data.requested_amount !== undefined && data.requested_amount !== null
+      ? Number(data.requested_amount)
+      : paidKobo;
+
+  if (data.currency !== 'NGN' || requestedKobo !== expectedKobo || !(paidKobo >= expectedKobo)) {
+    console.error(
+      `Payment ${claimed.paystackReference} rejected: expected ${expectedKobo} kobo, ` +
+        `requested ${requestedKobo}, paid ${paidKobo}, currency ${data.currency}`
+    );
     return refundSafely(claimed, 'the amount paid did not match the price');
   }
+
   return finishCaptured(claimed);
 };
 

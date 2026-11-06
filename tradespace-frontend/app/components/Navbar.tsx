@@ -2,21 +2,29 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { Menu, X, LogOut, User } from 'lucide-react';
+import { usePathname } from 'next/navigation';
+import { Menu, X, LogOut, User, MessageCircle } from 'lucide-react';
 import API from '@/lib/api';
 import DialogHost from './DialogHost';
 import NotificationBell from './NotificationBell';
 
 export default function Navbar() {
+  const pathname = usePathname();
   const [isOpen, setIsOpen] = useState(false);
   const [user, setUser] = useState<any>(null);
   const [mounted, setMounted] = useState(false);
   const [liveCount, setLiveCount] = useState(0);
+  const [unreadMessages, setUnreadMessages] = useState(0);
 
   useEffect(() => {
     setMounted(true);
     checkUser();
   }, []);
+
+  // Closes the mobile menu whenever the page changes, whatever was tapped
+  useEffect(() => {
+    setIsOpen(false);
+  }, [pathname]);
 
   // How many sellers are live right now. Pauses while the tab is hidden.
   useEffect(() => {
@@ -46,6 +54,39 @@ export default function Navbar() {
     };
   }, []);
 
+  // How many unread messages I have. Only when logged in, and pauses while the tab is hidden.
+  useEffect(() => {
+    if (!user) {
+      setUnreadMessages(0);
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadUnread = async () => {
+      if (document.hidden) return;
+      try {
+        const res = await API.get('/messages/unread-count');
+        if (!cancelled) setUnreadMessages(Number(res.data.count) || 0);
+      } catch (err) {
+        // the count just stays as it was
+      }
+    };
+
+    loadUnread();
+    const timer = setInterval(loadUnread, 30000);
+    const onVisible = () => {
+      if (!document.hidden) loadUnread();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [user]);
+
   const checkUser = () => {
     try {
       const userData = localStorage.getItem('user');
@@ -68,6 +109,7 @@ export default function Navbar() {
   if (!mounted) return null;
 
   const isLive = liveCount > 0;
+  const unreadLabel = unreadMessages > 99 ? '99+' : String(unreadMessages);
 
   return (
     <>
@@ -77,7 +119,11 @@ export default function Navbar() {
           <div className="flex justify-between items-center h-16">
 
             {/* Logo */}
-            <Link href="/" className="flex items-center gap-2 font-bold text-xl md:text-2xl text-blue-600">
+            <Link
+              href="/"
+              onClick={closeMenu}
+              className="flex items-center gap-2 font-bold text-xl md:text-2xl text-blue-600"
+            >
               TradeSpace
             </Link>
 
@@ -95,6 +141,7 @@ export default function Navbar() {
             <div className="flex items-center gap-3">
               <Link
                 href="/live"
+                onClick={closeMenu}
                 className={
                   'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold transition ' +
                   (isLive
@@ -109,6 +156,23 @@ export default function Navbar() {
                 />
                 Live{isLive ? ` ${liveCount}` : ''}
               </Link>
+
+              {user && (
+                <Link
+                  href="/messages"
+                  onClick={closeMenu}
+                  className="relative p-2 text-gray-700 hover:text-blue-600"
+                  title="Messages"
+                  aria-label={unreadMessages > 0 ? `Messages, ${unreadMessages} unread` : 'Messages'}
+                >
+                  <MessageCircle className="w-5 h-5" />
+                  {unreadMessages > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 bg-red-600 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
+                      {unreadLabel}
+                    </span>
+                  )}
+                </Link>
+              )}
 
               {user && <NotificationBell />}
 
@@ -151,6 +215,7 @@ export default function Navbar() {
               <button
                 onClick={() => setIsOpen(!isOpen)}
                 className="md:hidden text-gray-700"
+                aria-label={isOpen ? 'Close menu' : 'Open menu'}
               >
                 {isOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
               </button>
@@ -169,6 +234,9 @@ export default function Navbar() {
 
               {user ? (
                 <>
+                  <Link href="/messages" onClick={closeMenu} className="block text-gray-700 hover:text-blue-600 font-medium text-sm">
+                    Messages{unreadMessages > 0 ? ` (${unreadLabel})` : ''}
+                  </Link>
                   <Link href="/profile" onClick={closeMenu} className="block text-gray-700 hover:text-blue-600 font-medium text-sm">
                     Profile
                   </Link>
