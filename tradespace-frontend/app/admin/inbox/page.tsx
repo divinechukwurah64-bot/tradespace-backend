@@ -433,4 +433,4 @@ export default function AdminInbox() {
       </main>
     </div>
   );
-}app/admin/page.tsx
+}
