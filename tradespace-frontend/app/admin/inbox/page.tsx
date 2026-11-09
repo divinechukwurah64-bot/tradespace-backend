@@ -3,10 +3,60 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { LayoutDashboard, Inbox as InboxIcon, ArrowLeft } from 'lucide-react';
 import API, { authAPI } from '@/lib/api';
 import { confirmDialog, toast } from '@/lib/dialogs';
 
 type Tab = 'reports' | 'tickets';
+type Tone = 'green' | 'amber' | 'gray';
+type BtnTone = 'green' | 'amber' | 'red' | 'ghost';
+
+const PANEL = 'bg-[#12121a] border border-white/10 rounded-2xl';
+
+const toneClass: Record<Tone, string> = {
+  green: 'bg-emerald-500/15 text-emerald-300',
+  amber: 'bg-amber-500/15 text-amber-300',
+  gray: 'bg-white/10 text-gray-300',
+};
+
+const btnClass: Record<BtnTone, string> = {
+  green: 'bg-emerald-600 hover:bg-emerald-500 text-white',
+  amber: 'bg-amber-600 hover:bg-amber-500 text-white',
+  red: 'bg-red-600 hover:bg-red-500 text-white',
+  ghost: 'bg-transparent border border-white/15 text-gray-200 hover:bg-white/5',
+};
+
+const statusTone = (status: string): Tone =>
+  status === 'open' ? 'amber' : status === 'actioned' || status === 'resolved' ? 'green' : 'gray';
+
+function Pill({ tone, children }: { tone: Tone; children: React.ReactNode }) {
+  return (
+    <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold ${toneClass[tone]}`}>{children}</span>
+  );
+}
+
+function Btn({
+  tone,
+  onClick,
+  disabled,
+  children,
+}: {
+  tone: BtnTone;
+  onClick: () => void;
+  disabled?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`px-4 py-1.5 rounded-lg text-sm font-bold disabled:opacity-40 disabled:cursor-not-allowed ${btnClass[tone]}`}
+    >
+      {children}
+    </button>
+  );
+}
 
 export default function AdminInbox() {
   const router = useRouter();
@@ -104,278 +154,283 @@ export default function AdminInbox() {
   };
 
   if (checking) {
-    return <div className="max-w-5xl mx-auto px-4 py-8 text-gray-600">Loading...</div>;
+    return (
+      <div className="min-h-[calc(100vh-4rem)] bg-[#08080d] text-gray-300 flex items-center justify-center">
+        Loading...
+      </div>
+    );
   }
 
-  const statusColor = (s: string) =>
-    s === 'open' ? 'bg-yellow-500' : s === 'actioned' || s === 'resolved' ? 'bg-green-600' : 'bg-gray-500';
+  const navButton = (active: boolean) =>
+    `flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-semibold whitespace-nowrap transition ${
+      active ? 'bg-white text-black' : 'text-gray-400 hover:bg-white/5 hover:text-white'
+    }`;
+
+  const tabButton = (active: boolean) =>
+    `px-5 py-2 rounded-xl font-semibold text-sm border transition ${
+      active
+        ? 'bg-white text-black border-white'
+        : 'bg-[#12121a] text-gray-300 border-white/10 hover:bg-white/5'
+    }`;
 
   return (
-    <div className="max-w-5xl mx-auto px-4 py-8">
-      <div className="flex items-center justify-between flex-wrap gap-3 mb-6">
-        <h1 className="text-3xl font-bold text-black">Inbox</h1>
-        <Link href="/admin" className="text-blue-600 hover:underline text-sm">
-          Back to admin panel
-        </Link>
-      </div>
+    <div className="min-h-[calc(100vh-4rem)] bg-[#08080d] text-gray-100 flex flex-col md:flex-row">
+      {/* Sidebar: a row on phones, a column from tablet size up */}
+      <aside className="md:w-56 md:flex-shrink-0 bg-[#0d0d14] border-b md:border-b-0 md:border-r border-white/10 p-3 md:p-4">
+        <nav className="flex md:flex-col gap-1 overflow-x-auto md:h-full">
+          <Link href="/admin" className={navButton(false)}>
+            <LayoutDashboard className="w-4 h-4" />
+            Admin panel
+          </Link>
+          <span className={navButton(true)}>
+            <InboxIcon className="w-4 h-4" />
+            Inbox
+          </span>
+          <Link href="/auctions" className={`${navButton(false)} md:mt-auto`}>
+            <ArrowLeft className="w-4 h-4" />
+            Back to site
+          </Link>
+        </nav>
+      </aside>
 
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-6 text-sm">{error}</div>
-      )}
+      <main className="flex-1 min-w-0 p-4 md:p-8 max-w-5xl">
+        <h1 className="text-2xl md:text-3xl font-bold text-white mb-6">Inbox</h1>
 
-      <div className="flex gap-2 mb-4 flex-wrap">
-        <button
-          onClick={() => setTab('reports')}
-          className={`px-5 py-2 rounded-lg font-semibold border ${
-            tab === 'reports' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-800 border-gray-300'
-          }`}
-        >
-          Reports ({reports.length})
-        </button>
-        <button
-          onClick={() => setTab('tickets')}
-          className={`px-5 py-2 rounded-lg font-semibold border ${
-            tab === 'tickets' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-800 border-gray-300'
-          }`}
-        >
-          Support requests ({tickets.length})
-        </button>
-      </div>
+        {error && (
+          <div className="bg-red-500/10 border border-red-500/30 text-red-300 px-4 py-3 rounded-xl mb-6 text-sm">
+            {error}
+          </div>
+        )}
 
-      <label className="flex items-center gap-2 text-sm text-gray-700 mb-4">
-        <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />
-        Include ones already handled
-      </label>
+        <div className="flex gap-2 mb-4 flex-wrap">
+          <button type="button" onClick={() => setTab('reports')} className={tabButton(tab === 'reports')}>
+            Reports ({reports.length})
+          </button>
+          <button type="button" onClick={() => setTab('tickets')} className={tabButton(tab === 'tickets')}>
+            Support requests ({tickets.length})
+          </button>
+        </div>
 
-      {tab === 'reports' && (
-        <div className="space-y-4">
-          {reports.length === 0 && <p className="text-gray-500">No reports to show.</p>}
+        <label className="flex items-center gap-2 text-sm text-gray-300 mb-4">
+          <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />
+          Include ones already handled
+        </label>
 
-          {reports.map((r) => {
-            const t = r.target || {};
-            return (
-              <div key={r._id} className="bg-white rounded-lg shadow p-5">
-                <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs font-bold px-3 py-1 rounded-full bg-gray-800 text-white uppercase">
-                      {r.targetType}
-                    </span>
-                    <span className="font-semibold text-black">{r.reason}</span>
+        {tab === 'reports' && (
+          <div className="space-y-4">
+            {reports.length === 0 && <p className="text-gray-500">No reports to show.</p>}
+
+            {reports.map((r) => {
+              const t = r.target || {};
+              return (
+                <div key={r._id} className={`${PANEL} p-5`}>
+                  <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-bold px-3 py-1 rounded-full bg-white/10 text-gray-200 uppercase">
+                        {r.targetType}
+                      </span>
+                      <span className="font-semibold text-white">{r.reason}</span>
+                    </div>
+                    <Pill tone={statusTone(r.status)}>{r.status}</Pill>
                   </div>
-                  <span className={`text-xs font-bold px-3 py-1 rounded-full text-white ${statusColor(r.status)}`}>
-                    {r.status}
-                  </span>
-                </div>
 
-                <p className="text-sm text-gray-600">
-                  Reported by {r.reporterId?.fullName || 'Unknown'} on {new Date(r.createdAt).toLocaleString()}
-                </p>
-                {r.note && <p className="text-sm text-gray-800 mt-2 break-words">Their note: {r.note}</p>}
+                  <p className="text-sm text-gray-400">
+                    Reported by {r.reporterId?.fullName || 'Unknown'} on {new Date(r.createdAt).toLocaleString()}
+                  </p>
+                  {r.note && <p className="text-sm text-gray-200 mt-2 break-words">Their note: {r.note}</p>}
 
-                <div className="bg-gray-50 border border-gray-100 rounded-lg p-3 mt-3 text-sm">
-                  {t.exists === false ? (
-                    <p className="text-gray-500">This no longer exists. It may already have been removed.</p>
-                  ) : (
-                    <>
-                      <p className="font-semibold text-black break-words">{t.title}</p>
-                      <p className="text-gray-600">
-                        {t.owner ? `By ${t.owner}` : ''}
-                        {t.owner && t.status ? ' - ' : ''}
-                        {t.status ? `Status: ${t.status}` : ''}
-                      </p>
-                      {t.link && (
-                        <a href={t.link} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">
-                          Open it
-                        </a>
+                  <div className="bg-white/5 border border-white/10 rounded-xl p-3 mt-3 text-sm">
+                    {t.exists === false ? (
+                      <p className="text-gray-400">This no longer exists. It may already have been removed.</p>
+                    ) : (
+                      <>
+                        <p className="font-semibold text-white break-words">{t.title}</p>
+                        <p className="text-gray-400">
+                          {t.owner ? `By ${t.owner}` : ''}
+                          {t.owner && t.status ? ' - ' : ''}
+                          {t.status ? `Status: ${t.status}` : ''}
+                        </p>
+                        {t.link && (
+                          <a href={t.link} target="_blank" rel="noreferrer" className="text-blue-300 hover:underline">
+                            Open it
+                          </a>
+                        )}
+                      </>
+                    )}
+                  </div>
+
+                  {r.status === 'open' && (
+                    <div className="flex flex-wrap gap-2 mt-4">
+                      {t.exists !== false && r.targetType === 'comment' && (
+                        <Btn
+                          tone="red"
+                          onClick={() =>
+                            act(r, 'Delete this comment?', 'The comment is removed for good.', true, () =>
+                              API.delete(`/support/admin/comments/${r.targetId}`)
+                            )
+                          }
+                        >
+                          Delete comment
+                        </Btn>
                       )}
-                    </>
+
+                      {t.exists !== false && r.targetType === 'auction' && (
+                        <>
+                          {t.status === 'active' && (
+                            <Btn
+                              tone="amber"
+                              onClick={() =>
+                                act(r, 'End this auction?', `"${t.title}" ends now.`, false, () =>
+                                  API.patch(`/admin/auctions/${r.targetId}/end`)
+                                )
+                              }
+                            >
+                              End auction
+                            </Btn>
+                          )}
+                          <Btn
+                            tone="red"
+                            onClick={() =>
+                              act(r, 'Remove this auction?', `"${t.title}" is deleted for good.`, true, () =>
+                                API.delete(`/admin/auctions/${r.targetId}`)
+                              )
+                            }
+                          >
+                            Remove auction
+                          </Btn>
+                        </>
+                      )}
+
+                      {t.exists !== false && r.targetType === 'gig' && (
+                        <>
+                          {t.status === 'active' && (
+                            <Btn
+                              tone="amber"
+                              onClick={() =>
+                                act(r, 'Pause this gig?', `"${t.title}" is hidden until you reactivate it.`, false, () =>
+                                  API.patch(`/admin/gigs/${r.targetId}/status`)
+                                )
+                              }
+                            >
+                              Pause gig
+                            </Btn>
+                          )}
+                          <Btn
+                            tone="red"
+                            onClick={() =>
+                              act(r, 'Remove this gig?', `"${t.title}" is deleted for good.`, true, () =>
+                                API.delete(`/admin/gigs/${r.targetId}`)
+                              )
+                            }
+                          >
+                            Remove gig
+                          </Btn>
+                        </>
+                      )}
+
+                      {t.exists !== false && r.targetType === 'user' && (
+                        <Btn
+                          tone="red"
+                          onClick={() =>
+                            act(
+                              r,
+                              t.status === 'banned' ? 'Unban this user?' : 'Ban this user?',
+                              t.title,
+                              t.status !== 'banned',
+                              () => API.patch(`/admin/users/${r.targetId}/ban`)
+                            )
+                          }
+                        >
+                          {t.status === 'banned' ? 'Unban user' : 'Ban user'}
+                        </Btn>
+                      )}
+
+                      <Btn tone="green" onClick={() => decide(r, 'actioned')}>
+                        Mark handled
+                      </Btn>
+                      <Btn tone="ghost" onClick={() => decide(r, 'dismissed')}>
+                        Dismiss
+                      </Btn>
+                    </div>
+                  )}
+
+                  {r.status !== 'open' && (
+                    <button
+                      type="button"
+                      onClick={() => decide(r, 'open')}
+                      className="mt-4 text-sm text-blue-300 hover:underline"
+                    >
+                      Reopen this report
+                    </button>
                   )}
                 </div>
+              );
+            })}
+          </div>
+        )}
 
-                {r.status === 'open' && (
-                  <div className="flex flex-wrap gap-2 mt-4">
-                    {t.exists !== false && r.targetType === 'comment' && (
-                      <button
-                        onClick={() =>
-                          act(r, 'Delete this comment?', 'The comment is removed for good.', true, () =>
-                            API.delete(`/support/admin/comments/${r.targetId}`)
-                          )
-                        }
-                        className="bg-red-600 text-white px-4 py-1.5 rounded-lg text-sm font-bold hover:bg-red-700"
-                      >
-                        Delete comment
-                      </button>
-                    )}
+        {tab === 'tickets' && (
+          <div className="space-y-4">
+            {tickets.length === 0 && <p className="text-gray-500">No support requests to show.</p>}
 
-                    {t.exists !== false && r.targetType === 'auction' && (
-                      <>
-                        {t.status === 'active' && (
-                          <button
-                            onClick={() =>
-                              act(r, 'End this auction?', `"${t.title}" ends now.`, false, () =>
-                                API.patch(`/admin/auctions/${r.targetId}/end`)
-                              )
-                            }
-                            className="bg-yellow-500 text-white px-4 py-1.5 rounded-lg text-sm font-bold hover:bg-yellow-600"
-                          >
-                            End auction
-                          </button>
-                        )}
-                        <button
-                          onClick={() =>
-                            act(r, 'Remove this auction?', `"${t.title}" is deleted for good.`, true, () =>
-                              API.delete(`/admin/auctions/${r.targetId}`)
-                            )
-                          }
-                          className="bg-red-600 text-white px-4 py-1.5 rounded-lg text-sm font-bold hover:bg-red-700"
-                        >
-                          Remove auction
-                        </button>
-                      </>
-                    )}
+            {tickets.map((t) => (
+              <div key={t._id} className={`${PANEL} p-5`}>
+                <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
+                  <p className="font-semibold text-white">{t.topic}</p>
+                  <Pill tone={statusTone(t.status)}>{t.status}</Pill>
+                </div>
 
-                    {t.exists !== false && r.targetType === 'gig' && (
-                      <>
-                        {t.status === 'active' && (
-                          <button
-                            onClick={() =>
-                              act(r, 'Pause this gig?', `"${t.title}" is hidden until you reactivate it.`, false, () =>
-                                API.patch(`/admin/gigs/${r.targetId}/status`)
-                              )
-                            }
-                            className="bg-yellow-500 text-white px-4 py-1.5 rounded-lg text-sm font-bold hover:bg-yellow-600"
-                          >
-                            Pause gig
-                          </button>
-                        )}
-                        <button
-                          onClick={() =>
-                            act(r, 'Remove this gig?', `"${t.title}" is deleted for good.`, true, () =>
-                              API.delete(`/admin/gigs/${r.targetId}`)
-                            )
-                          }
-                          className="bg-red-600 text-white px-4 py-1.5 rounded-lg text-sm font-bold hover:bg-red-700"
-                        >
-                          Remove gig
-                        </button>
-                      </>
-                    )}
+                <p className="text-sm text-gray-400">
+                  {t.name} -{' '}
+                  <a href={`mailto:${t.email}`} className="text-blue-300 hover:underline">
+                    {t.email}
+                  </a>{' '}
+                  - {new Date(t.createdAt).toLocaleString()}
+                  {t.userId ? '' : ' (not logged in, so reply by email)'}
+                </p>
 
-                    {t.exists !== false && r.targetType === 'user' && (
-                      <button
-                        onClick={() =>
-                          act(
-                            r,
-                            t.status === 'banned' ? 'Unban this user?' : 'Ban this user?',
-                            t.title,
-                            t.status !== 'banned',
-                            () => API.patch(`/admin/users/${r.targetId}/ban`)
-                          )
-                        }
-                        className="bg-red-600 text-white px-4 py-1.5 rounded-lg text-sm font-bold hover:bg-red-700"
-                      >
-                        {t.status === 'banned' ? 'Unban user' : 'Ban user'}
-                      </button>
-                    )}
+                <p className="text-sm text-gray-100 mt-3 whitespace-pre-wrap break-words">{t.message}</p>
+                {t.link && <p className="text-sm text-gray-400 mt-2 break-all">Link: {t.link}</p>}
 
-                    <button
-                      onClick={() => decide(r, 'actioned')}
-                      className="bg-green-600 text-white px-4 py-1.5 rounded-lg text-sm font-bold hover:bg-green-700"
-                    >
-                      Mark handled
-                    </button>
-                    <button
-                      onClick={() => decide(r, 'dismissed')}
-                      className="bg-white text-gray-700 border border-gray-300 px-4 py-1.5 rounded-lg text-sm font-bold hover:bg-gray-50"
-                    >
-                      Dismiss
-                    </button>
+                {t.adminNote && (
+                  <div className="mt-3 bg-blue-500/10 border border-blue-500/20 rounded-xl p-3">
+                    <p className="text-xs font-bold text-blue-300 mb-1">Your reply</p>
+                    <p className="text-sm text-gray-200 whitespace-pre-wrap break-words">{t.adminNote}</p>
                   </div>
                 )}
 
-                {r.status !== 'open' && (
-                  <button
-                    onClick={() => decide(r, 'open')}
-                    className="mt-4 text-sm text-blue-600 hover:underline"
+                <textarea
+                  value={replies[t._id] || ''}
+                  onChange={(e) => setReplies((prev) => ({ ...prev, [t._id]: e.target.value }))}
+                  rows={2}
+                  maxLength={1000}
+                  placeholder={t.userId ? 'Write a reply. They get it as a notification.' : 'Write a note for your records'}
+                  className="w-full mt-3 px-3 py-2 rounded-xl bg-[#0d0d14] border border-white/10 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                />
+
+                <div className="flex flex-wrap gap-2 mt-3">
+                  <Btn
+                    tone="green"
+                    onClick={() => updateTicket(t, { adminNote: replies[t._id] || '', status: 'resolved' })}
+                    disabled={!(replies[t._id] || '').trim()}
                   >
-                    Reopen this report
-                  </button>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {tab === 'tickets' && (
-        <div className="space-y-4">
-          {tickets.length === 0 && <p className="text-gray-500">No support requests to show.</p>}
-
-          {tickets.map((t) => (
-            <div key={t._id} className="bg-white rounded-lg shadow p-5">
-              <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
-                <p className="font-semibold text-black">{t.topic}</p>
-                <span className={`text-xs font-bold px-3 py-1 rounded-full text-white ${statusColor(t.status)}`}>
-                  {t.status}
-                </span>
-              </div>
-
-              <p className="text-sm text-gray-600">
-                {t.name} -{' '}
-                <a href={`mailto:${t.email}`} className="text-blue-600 hover:underline">
-                  {t.email}
-                </a>{' '}
-                - {new Date(t.createdAt).toLocaleString()}
-                {t.userId ? '' : ' (not logged in, so reply by email)'}
-              </p>
-
-              <p className="text-sm text-gray-900 mt-3 whitespace-pre-wrap break-words">{t.message}</p>
-              {t.link && <p className="text-sm text-gray-600 mt-2 break-all">Link: {t.link}</p>}
-
-              {t.adminNote && (
-                <div className="mt-3 bg-blue-50 border border-blue-100 rounded-lg p-3">
-                  <p className="text-xs font-bold text-blue-700 mb-1">Your reply</p>
-                  <p className="text-sm text-gray-800 whitespace-pre-wrap break-words">{t.adminNote}</p>
+                    Reply and resolve
+                  </Btn>
+                  {t.status === 'open' ? (
+                    <Btn tone="ghost" onClick={() => updateTicket(t, { status: 'resolved' })}>
+                      Resolve without a reply
+                    </Btn>
+                  ) : (
+                    <Btn tone="ghost" onClick={() => updateTicket(t, { status: 'open' })}>
+                      Reopen
+                    </Btn>
+                  )}
                 </div>
-              )}
-
-              <textarea
-                value={replies[t._id] || ''}
-                onChange={(e) => setReplies((prev) => ({ ...prev, [t._id]: e.target.value }))}
-                rows={2}
-                maxLength={1000}
-                placeholder={t.userId ? 'Write a reply. They get it as a notification.' : 'Write a note for your records'}
-                className="w-full mt-3 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-black bg-white"
-              />
-
-              <div className="flex flex-wrap gap-2 mt-3">
-                <button
-                  onClick={() => updateTicket(t, { adminNote: replies[t._id] || '', status: 'resolved' })}
-                  disabled={!(replies[t._id] || '').trim()}
-                  className="bg-green-600 text-white px-4 py-1.5 rounded-lg text-sm font-bold hover:bg-green-700 disabled:bg-gray-400"
-                >
-                  Reply and resolve
-                </button>
-                {t.status === 'open' ? (
-                  <button
-                    onClick={() => updateTicket(t, { status: 'resolved' })}
-                    className="bg-white text-gray-700 border border-gray-300 px-4 py-1.5 rounded-lg text-sm font-bold hover:bg-gray-50"
-                  >
-                    Resolve without a reply
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => updateTicket(t, { status: 'open' })}
-                    className="bg-white text-gray-700 border border-gray-300 px-4 py-1.5 rounded-lg text-sm font-bold hover:bg-gray-50"
-                  >
-                    Reopen
-                  </button>
-                )}
               </div>
-            </div>
-          ))}
-        </div>
-      )}
+            ))}
+          </div>
+        )}
+      </main>
     </div>
   );
 }

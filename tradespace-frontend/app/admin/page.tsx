@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { LayoutDashboard, Users, Gavel, Briefcase, CreditCard, Inbox, ArrowLeft, ArrowUpRight } from 'lucide-react';
 import API, { authAPI } from '../../lib/api';
 import { confirmDialog, toast } from '../../lib/dialogs';
 
@@ -72,102 +73,147 @@ type AdminTransaction = {
   gigId?: { title?: string } | null;
 };
 
-type TabName = 'users' | 'auctions' | 'gigs' | 'transactions';
+type TabName = 'overview' | 'users' | 'auctions' | 'gigs' | 'transactions';
+type Tone = 'green' | 'blue' | 'amber' | 'red' | 'gray';
 
-const s = {
-  page: { maxWidth: 1200, margin: '0 auto', padding: '32px 16px', color: '#111827' } as React.CSSProperties,
-  header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 24 } as React.CSSProperties,
-  title: { fontSize: 28, fontWeight: 700, margin: 0 } as React.CSSProperties,
-  inboxBtn: { display: 'inline-flex', alignItems: 'center', gap: 8, padding: '10px 20px', borderRadius: 8, background: '#2563eb', color: '#ffffff', fontWeight: 700, textDecoration: 'none' } as React.CSSProperties,
-  inboxBadge: { background: '#dc2626', color: '#ffffff', borderRadius: 999, padding: '1px 9px', fontSize: 13, fontWeight: 700 } as React.CSSProperties,
-  statsRow: { display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 28 } as React.CSSProperties,
-  statCard: { flex: '1 1 150px', background: '#ffffff', border: '1px solid #e5e7eb', borderRadius: 12, padding: 20 } as React.CSSProperties,
-  statNumber: { fontSize: 30, fontWeight: 700 } as React.CSSProperties,
-  statLabel: { fontSize: 14, color: '#6b7280', marginTop: 4 } as React.CSSProperties,
-  tabs: { display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' } as React.CSSProperties,
-  tab: (active: boolean): React.CSSProperties => ({
-    padding: '8px 18px',
-    borderRadius: 8,
-    border: '1px solid #d1d5db',
-    background: active ? '#2563eb' : '#ffffff',
-    color: active ? '#ffffff' : '#111827',
-    cursor: 'pointer',
-    fontWeight: 600,
-  }),
-  tableWrap: { background: '#ffffff', border: '1px solid #e5e7eb', borderRadius: 12, overflowX: 'auto' } as React.CSSProperties,
-  table: { width: '100%', borderCollapse: 'collapse', fontSize: 14 } as React.CSSProperties,
-  th: { textAlign: 'left', padding: '12px 14px', background: '#f9fafb', borderBottom: '1px solid #e5e7eb', whiteSpace: 'nowrap' } as React.CSSProperties,
-  td: { padding: '12px 14px', borderBottom: '1px solid #f3f4f6', verticalAlign: 'top' } as React.CSSProperties,
-  btn: (color: string): React.CSSProperties => ({
-    padding: '6px 12px',
-    borderRadius: 6,
-    border: 'none',
-    background: color,
-    color: '#ffffff',
-    cursor: 'pointer',
-    fontSize: 13,
-    fontWeight: 600,
-    marginRight: 6,
-    marginBottom: 6,
-    whiteSpace: 'nowrap',
-  }),
-  badge: (color: string): React.CSSProperties => ({
-    display: 'inline-block',
-    padding: '2px 10px',
-    borderRadius: 999,
-    background: color,
-    color: '#ffffff',
-    fontSize: 12,
-    fontWeight: 600,
-  }),
-  small: { fontSize: 12, color: '#6b7280', marginTop: 4, maxWidth: 260, wordBreak: 'break-word' } as React.CSSProperties,
-  search: { padding: '8px 12px', border: '1px solid #d1d5db', borderRadius: 8, width: 280, marginBottom: 12 } as React.CSSProperties,
-  filterRow: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, fontSize: 14 } as React.CSSProperties,
-  error: { background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c', padding: 12, borderRadius: 8, marginBottom: 16 } as React.CSSProperties,
-  overlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100, padding: 16 } as React.CSSProperties,
-  modal: { background: '#ffffff', borderRadius: 12, padding: 24, width: '100%', maxWidth: 480 } as React.CSSProperties,
-  textarea: { width: '100%', padding: 10, border: '1px solid #d1d5db', borderRadius: 8, marginTop: 12, marginBottom: 16, fontFamily: 'inherit', fontSize: 14 } as React.CSSProperties,
+const TAB_TITLES: Record<TabName, string> = {
+  overview: 'Overview',
+  users: 'Users',
+  auctions: 'Auctions',
+  gigs: 'Gigs',
+  transactions: 'Transactions',
 };
+
+const toneClass: Record<Tone, string> = {
+  green: 'bg-emerald-500/15 text-emerald-300',
+  blue: 'bg-blue-500/15 text-blue-300',
+  amber: 'bg-amber-500/15 text-amber-300',
+  red: 'bg-red-500/15 text-red-300',
+  gray: 'bg-white/10 text-gray-300',
+};
+
+const btnClass: Record<'green' | 'blue' | 'amber' | 'red', string> = {
+  green: 'bg-emerald-600 hover:bg-emerald-500 text-white',
+  blue: 'bg-blue-600 hover:bg-blue-500 text-white',
+  amber: 'bg-amber-600 hover:bg-amber-500 text-white',
+  red: 'bg-red-600 hover:bg-red-500 text-white',
+};
+
+const PANEL = 'bg-[#12121a] border border-white/10 rounded-2xl';
+const TH =
+  'text-left px-4 py-3 text-xs font-semibold uppercase tracking-wide text-gray-400 border-b border-white/10 whitespace-nowrap';
+const TD = 'px-4 py-3 border-b border-white/5 align-top text-sm text-gray-200';
+const SMALL = 'text-xs text-gray-400 mt-1 max-w-[260px] break-words';
 
 const naira = (n: number | null | undefined) =>
   n === null || n === undefined ? '-' : `\u20A6${Number(n).toLocaleString()}`;
 
 const formatDate = (d: string) => new Date(d).toLocaleString();
 
-const paymentColor = (status: string) => {
+const paymentTone = (status: string): Tone => {
   switch (status) {
-    case 'released': return '#16a34a';
+    case 'released': return 'green';
     case 'captured':
-    case 'held': return '#2563eb';
-    case 'refunded': return '#d97706';
-    case 'failed': return '#dc2626';
-    default: return '#6b7280';
+    case 'held': return 'blue';
+    case 'refunded': return 'amber';
+    case 'failed': return 'red';
+    default: return 'gray';
   }
 };
 
-const payoutColor = (status: string) => {
+const payoutTone = (status: string): Tone => {
   switch (status) {
-    case 'paid': return '#16a34a';
+    case 'paid': return 'green';
     case 'processing':
-    case 'queued': return '#2563eb';
-    case 'failed': return '#dc2626';
-    default: return '#6b7280';
+    case 'queued': return 'blue';
+    case 'failed': return 'red';
+    default: return 'gray';
   }
 };
 
-const disputeColor = (status: string) => {
+const disputeTone = (status: string): Tone => {
   switch (status) {
-    case 'filed': return '#dc2626';
-    case 'resolved': return '#16a34a';
-    default: return '#6b7280';
+    case 'filed': return 'red';
+    case 'resolved': return 'green';
+    default: return 'gray';
   }
 };
+
+const auctionTone = (status: string): Tone => {
+  switch (status) {
+    case 'active': return 'green';
+    case 'sold': return 'blue';
+    case 'awaiting_payment': return 'amber';
+    default: return 'gray';
+  }
+};
+
+const gigTone = (status: string): Tone => {
+  switch (status) {
+    case 'active': return 'green';
+    case 'paused': return 'amber';
+    default: return 'gray';
+  }
+};
+
+function Pill({ tone, children }: { tone: Tone; children: React.ReactNode }) {
+  return (
+    <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold ${toneClass[tone]}`}>
+      {children}
+    </span>
+  );
+}
+
+function Btn({
+  tone,
+  onClick,
+  disabled,
+  children,
+}: {
+  tone: 'green' | 'blue' | 'amber' | 'red';
+  onClick: () => void;
+  disabled?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`px-3 py-1.5 rounded-lg text-xs font-semibold mr-2 mb-2 whitespace-nowrap disabled:opacity-50 ${btnClass[tone]}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function StatCard({
+  label,
+  value,
+  highlight,
+}: {
+  label: string;
+  value: string | number;
+  highlight?: boolean;
+}) {
+  return (
+    <div
+      className={`rounded-2xl p-5 ${
+        highlight ? 'bg-white text-black' : 'bg-[#12121a] border border-white/10 text-white'
+      }`}
+    >
+      <p className={`text-sm ${highlight ? 'text-gray-600' : 'text-gray-400'}`}>{label}</p>
+      <p className="text-2xl md:text-3xl font-bold mt-2 break-words">{value}</p>
+    </div>
+  );
+}
 
 export default function AdminPage() {
   const router = useRouter();
 
   const [checking, setChecking] = useState(true);
-  const [tab, setTab] = useState<TabName>('users');
+  const [tab, setTab] = useState<TabName>('overview');
+  const [adminName, setAdminName] = useState('');
   const [stats, setStats] = useState<Stats | null>(null);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [auctions, setAuctions] = useState<AdminAuction[]>([]);
@@ -237,6 +283,7 @@ export default function AdminPage() {
           router.replace('/');
           return;
         }
+        setAdminName(me.data?.fullName || '');
         await Promise.all([
           loadStats(),
           loadUsers(''),
@@ -420,10 +467,15 @@ export default function AdminPage() {
     }
   };
 
+  const goToAttention = () => {
+    setAttentionOnly(true);
+    setTab('transactions');
+  };
+
   if (checking) {
     return (
-      <div style={s.page}>
-        <p>Loading admin panel...</p>
+      <div className="min-h-[calc(100vh-4rem)] bg-[#08080d] text-gray-300 flex items-center justify-center">
+        Loading admin panel...
       </div>
     );
   }
@@ -433,128 +485,333 @@ export default function AdminPage() {
 
   const visibleTransactions = attentionOnly ? transactions.filter(needsAttention) : transactions;
 
+  // Figures worked out from the transactions loaded above
+  const paidTransactions = transactions.filter(
+    (t) => t.paymentStatus === 'held' || t.paymentStatus === 'released'
+  );
+  const totalSales = paidTransactions.reduce((sum, t) => sum + Number(t.amount || 0), 0);
+  const commissionEarned = paidTransactions.reduce((sum, t) => sum + Number(t.platformCommission || 0), 0);
+  const attentionCount = transactions.filter(needsAttention).length;
+  const manualRefundCount = transactions.filter((t) => t.paymentStatus === 'captured').length;
+
+  // Paid sales per day for the last 14 days
+  const chartDays = Array.from({ length: 14 }, (_, index) => {
+    const day = new Date();
+    day.setHours(0, 0, 0, 0);
+    day.setDate(day.getDate() - (13 - index));
+    return day;
+  });
+
+  const chartData = chartDays.map((day) => {
+    const key = day.toDateString();
+    const value = paidTransactions
+      .filter((t) => new Date(t.createdAt).toDateString() === key)
+      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+    return {
+      value,
+      label: day.toLocaleDateString(undefined, { day: 'numeric', month: 'short' }),
+    };
+  });
+
+  const chartMax = Math.max(...chartData.map((d) => d.value), 1);
+
+  const latestTransactions = [...transactions]
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .slice(0, 5);
+
+  const firstName = adminName.split(' ')[0] || 'Admin';
+
+  const navItems: { key: TabName; label: string; icon: React.ReactNode }[] = [
+    { key: 'overview', label: 'Overview', icon: <LayoutDashboard className="w-4 h-4" /> },
+    { key: 'transactions', label: 'Transactions', icon: <CreditCard className="w-4 h-4" /> },
+    { key: 'users', label: 'Users', icon: <Users className="w-4 h-4" /> },
+    { key: 'auctions', label: 'Auctions', icon: <Gavel className="w-4 h-4" /> },
+    { key: 'gigs', label: 'Gigs', icon: <Briefcase className="w-4 h-4" /> },
+  ];
+
+  const navButton = (active: boolean) =>
+    `flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-semibold whitespace-nowrap transition ${
+      active ? 'bg-white text-black' : 'text-gray-400 hover:bg-white/5 hover:text-white'
+    }`;
+
   return (
-    <div style={s.page}>
-      <div style={s.header}>
-        <h1 style={s.title}>Admin Panel</h1>
-        <Link href="/admin/inbox" style={s.inboxBtn}>
-          Inbox
-          {inboxCount > 0 && <span style={s.inboxBadge}>{inboxCount}</span>}
-        </Link>
-      </div>
+    <div className="min-h-[calc(100vh-4rem)] bg-[#08080d] text-gray-100 flex flex-col md:flex-row">
+      {/* Sidebar: a row on phones, a column from tablet size up */}
+      <aside className="md:w-56 md:flex-shrink-0 bg-[#0d0d14] border-b md:border-b-0 md:border-r border-white/10 p-3 md:p-4">
+        <nav className="flex md:flex-col gap-1 overflow-x-auto md:h-full">
+          {navItems.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() => setTab(item.key)}
+              className={navButton(tab === item.key)}
+            >
+              {item.icon}
+              {item.label}
+            </button>
+          ))}
 
-      {error && <div style={s.error}>{error}</div>}
+          <Link href="/admin/inbox" className={navButton(false)}>
+            <Inbox className="w-4 h-4" />
+            Inbox
+            {inboxCount > 0 && (
+              <span className="bg-red-600 text-white rounded-full px-2 text-xs font-bold">{inboxCount}</span>
+            )}
+          </Link>
 
-      {stats && (
-        <div style={s.statsRow}>
-          <div style={s.statCard}>
-            <div style={s.statNumber}>{stats.users ?? 0}</div>
-            <div style={s.statLabel}>Total users</div>
-          </div>
-          <div style={s.statCard}>
-            <div style={s.statNumber}>{stats.bannedUsers ?? 0}</div>
-            <div style={s.statLabel}>Banned users</div>
-          </div>
-          <div style={s.statCard}>
-            <div style={s.statNumber}>{stats.activeAuctions ?? 0}</div>
-            <div style={s.statLabel}>Active auctions</div>
-          </div>
-          <div style={s.statCard}>
-            <div style={s.statNumber}>{stats.totalAuctions ?? 0}</div>
-            <div style={s.statLabel}>Total auctions</div>
-          </div>
-          <div style={s.statCard}>
-            <div style={s.statNumber}>{stats.totalGigs ?? 0}</div>
-            <div style={s.statLabel}>Total gigs</div>
-          </div>
-          <div style={s.statCard}>
-            <div style={s.statNumber}>{stats.openDisputes ?? 0}</div>
-            <div style={s.statLabel}>Open disputes</div>
-          </div>
-          <div style={s.statCard}>
-            <div style={s.statNumber}>{stats.failedPayouts ?? 0}</div>
-            <div style={s.statLabel}>Failed payouts</div>
-          </div>
+          <Link href="/auctions" className={`${navButton(false)} md:mt-auto`}>
+            <ArrowLeft className="w-4 h-4" />
+            Back to site
+          </Link>
+        </nav>
+      </aside>
+
+      <main className="flex-1 min-w-0 p-4 md:p-8">
+        <div className="mb-6">
+          <h1 className="text-2xl md:text-3xl font-bold text-white">
+            {tab === 'overview' ? `Hello, ${firstName}` : TAB_TITLES[tab]}
+          </h1>
+          {tab === 'overview' && (
+            <p className="text-sm text-gray-400 mt-1">Here is what is happening on TradeSpace.</p>
+          )}
         </div>
-      )}
 
-      <div style={s.tabs}>
-        <button style={s.tab(tab === 'users')} onClick={() => setTab('users')}>
-          Users
-        </button>
-        <button style={s.tab(tab === 'auctions')} onClick={() => setTab('auctions')}>
-          Auctions
-        </button>
-        <button style={s.tab(tab === 'gigs')} onClick={() => setTab('gigs')}>
-          Gigs
-        </button>
-        <button style={s.tab(tab === 'transactions')} onClick={() => setTab('transactions')}>
-          Transactions
-        </button>
-      </div>
+        {error && (
+          <div className="bg-red-500/10 border border-red-500/30 text-red-300 px-4 py-3 rounded-xl mb-6 text-sm">
+            {error}
+          </div>
+        )}
 
-      {tab === 'users' && (
-        <>
-          <input
-            style={s.search}
-            type="text"
-            placeholder="Search by name or email"
-            value={search}
-            onChange={(e) => handleSearch(e.target.value)}
-          />
-          <div style={s.tableWrap}>
-            <table style={s.table}>
+        {tab === 'overview' && (
+          <>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+              <StatCard label="Total sales" value={naira(totalSales)} highlight />
+              <StatCard label="Commission earned" value={naira(Math.round(commissionEarned))} />
+              <StatCard label="Paid orders" value={paidTransactions.length} />
+              <StatCard label="Active auctions" value={stats?.activeAuctions ?? 0} />
+            </div>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+              <StatCard label="Total users" value={stats?.users ?? 0} />
+              <StatCard label="Banned users" value={stats?.bannedUsers ?? 0} />
+              <StatCard label="Total auctions" value={stats?.totalAuctions ?? 0} />
+              <StatCard label="Total gigs" value={stats?.totalGigs ?? 0} />
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+              <div className={`${PANEL} p-5 lg:col-span-2`}>
+                <div className="flex items-baseline justify-between mb-4">
+                  <h2 className="font-bold text-white">Sales, last 14 days</h2>
+                  <span className="text-xs text-gray-400">Paid and held orders</span>
+                </div>
+                <div className="flex items-end gap-1.5 h-48">
+                  {chartData.map((d, index) => (
+                    <div key={index} className="flex-1 min-w-0 h-full flex flex-col justify-end items-center">
+                      <div
+                        title={`${d.label}: ${naira(d.value)}`}
+                        className="w-full rounded-t-md bg-blue-500 hover:bg-blue-400 transition"
+                        style={{ height: d.value > 0 ? `${Math.max((d.value / chartMax) * 100, 3)}%` : '2px', opacity: d.value > 0 ? 1 : 0.25 }}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <div className="flex gap-1.5 mt-2">
+                  {chartData.map((d, index) => (
+                    <div key={index} className="flex-1 min-w-0 text-center text-[10px] text-gray-500">
+                      {index % 2 === 0 ? d.label : ''}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className={`${PANEL} p-5 flex flex-col`}>
+                <h2 className="font-bold text-white mb-4">Needs your attention</h2>
+                <div className="space-y-3 flex-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-300">Open disputes</span>
+                    <Pill tone={(stats?.openDisputes ?? 0) > 0 ? 'red' : 'gray'}>{stats?.openDisputes ?? 0}</Pill>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-300">Failed payouts</span>
+                    <Pill tone={(stats?.failedPayouts ?? 0) > 0 ? 'red' : 'gray'}>{stats?.failedPayouts ?? 0}</Pill>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-300">Manual refunds waiting</span>
+                    <Pill tone={manualRefundCount > 0 ? 'red' : 'gray'}>{manualRefundCount}</Pill>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-300">Inbox (reports and support)</span>
+                    <Pill tone={inboxCount > 0 ? 'amber' : 'gray'}>{inboxCount}</Pill>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={goToAttention}
+                  className="mt-5 inline-flex items-center justify-center gap-2 bg-white text-black rounded-xl py-2 text-sm font-semibold hover:bg-gray-200"
+                >
+                  {attentionCount} to review
+                  <ArrowUpRight className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className={`${PANEL} overflow-hidden`}>
+              <div className="flex items-center justify-between px-5 py-4">
+                <h2 className="font-bold text-white">Latest transactions</h2>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAttentionOnly(false);
+                    setTab('transactions');
+                  }}
+                  className="text-sm text-blue-300 hover:underline"
+                >
+                  See all
+                </button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse">
+                  <thead>
+                    <tr>
+                      <th className={TH}>Item</th>
+                      <th className={TH}>Buyer</th>
+                      <th className={TH}>Amount</th>
+                      <th className={TH}>Payment</th>
+                      <th className={TH}>Date</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {latestTransactions.length === 0 && (
+                      <tr>
+                        <td className={TD} colSpan={5}>No transactions yet</td>
+                      </tr>
+                    )}
+                    {latestTransactions.map((t) => (
+                      <tr key={t._id}>
+                        <td className={TD}>{itemTitle(t)}</td>
+                        <td className={TD}>{t.buyerId?.fullName || 'Unknown'}</td>
+                        <td className={TD}>{naira(t.amount)}</td>
+                        <td className={TD}>
+                          <Pill tone={paymentTone(t.paymentStatus)}>{t.paymentStatus}</Pill>
+                        </td>
+                        <td className={TD}>{formatDate(t.createdAt)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
+        )}
+
+        {tab === 'users' && (
+          <>
+            <input
+              className="px-4 py-2 mb-4 w-full max-w-sm rounded-xl bg-[#12121a] border border-white/10 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+              type="text"
+              placeholder="Search by name or email"
+              value={search}
+              onChange={(e) => handleSearch(e.target.value)}
+            />
+            <div className={`${PANEL} overflow-x-auto`}>
+              <table className="w-full border-collapse">
+                <thead>
+                  <tr>
+                    <th className={TH}>Name</th>
+                    <th className={TH}>Email</th>
+                    <th className={TH}>Phone</th>
+                    <th className={TH}>Role</th>
+                    <th className={TH}>Status</th>
+                    <th className={TH}>Strikes</th>
+                    <th className={TH}>Joined</th>
+                    <th className={TH}>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {users.length === 0 && (
+                    <tr>
+                      <td className={TD} colSpan={8}>No users found</td>
+                    </tr>
+                  )}
+                  {users.map((u) => (
+                    <tr key={u._id}>
+                      <td className={TD}>{u.fullName}</td>
+                      <td className={TD}>{u.email}</td>
+                      <td className={TD}>{u.phone || '-'}</td>
+                      <td className={TD}>{u.role}</td>
+                      <td className={TD}>
+                        {u.isBanned ? <Pill tone="red">Banned</Pill> : <Pill tone="green">Active</Pill>}
+                        {u.biddingBlocked && (
+                          <div className="mt-1.5">
+                            <Pill tone="amber">Bidding blocked</Pill>
+                          </div>
+                        )}
+                      </td>
+                      <td className={TD}>{u.paymentDefaults || 0} of 3</td>
+                      <td className={TD}>{formatDate(u.createdAt)}</td>
+                      <td className={TD}>
+                        {u.role !== 'admin' && (
+                          <Btn tone={u.isBanned ? 'green' : 'red'} onClick={() => toggleBan(u)}>
+                            {u.isBanned ? 'Unban' : 'Ban'}
+                          </Btn>
+                        )}
+                        {(u.biddingBlocked || (u.paymentDefaults || 0) > 0) && (
+                          <Btn tone="blue" onClick={() => unblockBidding(u)}>
+                            Unblock bidding
+                          </Btn>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+
+        {tab === 'auctions' && (
+          <div className={`${PANEL} overflow-x-auto`}>
+            <table className="w-full border-collapse">
               <thead>
                 <tr>
-                  <th style={s.th}>Name</th>
-                  <th style={s.th}>Email</th>
-                  <th style={s.th}>Phone</th>
-                  <th style={s.th}>Role</th>
-                  <th style={s.th}>Status</th>
-                  <th style={s.th}>Strikes</th>
-                  <th style={s.th}>Joined</th>
-                  <th style={s.th}>Action</th>
+                  <th className={TH}>Title</th>
+                  <th className={TH}>Seller</th>
+                  <th className={TH}>Starting bid</th>
+                  <th className={TH}>Current bid</th>
+                  <th className={TH}>Status</th>
+                  <th className={TH}>Ends</th>
+                  <th className={TH}>Action</th>
                 </tr>
               </thead>
               <tbody>
-                {users.length === 0 && (
+                {auctions.length === 0 && (
                   <tr>
-                    <td style={s.td} colSpan={8}>No users found</td>
+                    <td className={TD} colSpan={7}>No auctions found</td>
                   </tr>
                 )}
-                {users.map((u) => (
-                  <tr key={u._id}>
-                    <td style={s.td}>{u.fullName}</td>
-                    <td style={s.td}>{u.email}</td>
-                    <td style={s.td}>{u.phone || '-'}</td>
-                    <td style={s.td}>{u.role}</td>
-                    <td style={s.td}>
-                      {u.isBanned ? (
-                        <span style={s.badge('#dc2626')}>Banned</span>
-                      ) : (
-                        <span style={s.badge('#16a34a')}>Active</span>
-                      )}
-                      {u.biddingBlocked && (
-                        <div style={{ marginTop: 6 }}>
-                          <span style={s.badge('#d97706')}>Bidding blocked</span>
-                        </div>
-                      )}
+                {auctions.map((a) => (
+                  <tr key={a._id}>
+                    <td className={TD}>{a.title}</td>
+                    <td className={TD}>{a.sellerId?.fullName || 'Unknown'}</td>
+                    <td className={TD}>{naira(a.startingBid)}</td>
+                    <td className={TD}>{naira(a.currentBid)}</td>
+                    <td className={TD}>
+                      <Pill tone={auctionTone(a.status)}>
+                        {a.status === 'awaiting_payment' ? 'awaiting payment' : a.status}
+                      </Pill>
                     </td>
-                    <td style={s.td}>{u.paymentDefaults || 0} of 3</td>
-                    <td style={s.td}>{formatDate(u.createdAt)}</td>
-                    <td style={s.td}>
-                      {u.role !== 'admin' && (
-                        <button
-                          style={s.btn(u.isBanned ? '#16a34a' : '#dc2626')}
-                          onClick={() => toggleBan(u)}
-                        >
-                          {u.isBanned ? 'Unban' : 'Ban'}
-                        </button>
+                    <td className={TD}>{formatDate(a.endsAt)}</td>
+                    <td className={TD}>
+                      {a.status === 'active' && (
+                        <Btn tone="amber" onClick={() => endAuction(a)}>
+                          End
+                        </Btn>
                       )}
-                      {(u.biddingBlocked || (u.paymentDefaults || 0) > 0) && (
-                        <button style={s.btn('#2563eb')} onClick={() => unblockBidding(u)}>
-                          Unblock bidding
-                        </button>
+                      {a.status === 'sold' ? (
+                        <div className={SMALL}>Handle this sale from the Transactions tab</div>
+                      ) : (
+                        <Btn tone="red" onClick={() => removeAuction(a)}>
+                          Remove
+                        </Btn>
                       )}
                     </td>
                   </tr>
@@ -562,236 +819,170 @@ export default function AdminPage() {
               </tbody>
             </table>
           </div>
-        </>
-      )}
+        )}
 
-      {tab === 'auctions' && (
-        <div style={s.tableWrap}>
-          <table style={s.table}>
-            <thead>
-              <tr>
-                <th style={s.th}>Title</th>
-                <th style={s.th}>Seller</th>
-                <th style={s.th}>Starting bid</th>
-                <th style={s.th}>Current bid</th>
-                <th style={s.th}>Status</th>
-                <th style={s.th}>Ends</th>
-                <th style={s.th}>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {auctions.length === 0 && (
-                <tr>
-                  <td style={s.td} colSpan={7}>No auctions found</td>
-                </tr>
-              )}
-              {auctions.map((a) => (
-                <tr key={a._id}>
-                  <td style={s.td}>{a.title}</td>
-                  <td style={s.td}>{a.sellerId?.fullName || 'Unknown'}</td>
-                  <td style={s.td}>{naira(a.startingBid)}</td>
-                  <td style={s.td}>{naira(a.currentBid)}</td>
-                  <td style={s.td}>
-                    <span
-                      style={s.badge(
-                        a.status === 'active'
-                          ? '#16a34a'
-                          : a.status === 'sold'
-                          ? '#2563eb'
-                          : a.status === 'awaiting_payment'
-                          ? '#d97706'
-                          : '#6b7280'
-                      )}
-                    >
-                      {a.status === 'awaiting_payment' ? 'awaiting payment' : a.status}
-                    </span>
-                  </td>
-                  <td style={s.td}>{formatDate(a.endsAt)}</td>
-                  <td style={s.td}>
-                    {a.status === 'active' && (
-                      <button style={s.btn('#d97706')} onClick={() => endAuction(a)}>
-                        End
-                      </button>
-                    )}
-                    {a.status === 'sold' ? (
-                      <div style={s.small}>Handle this sale from the Transactions tab</div>
-                    ) : (
-                      <button style={s.btn('#dc2626')} onClick={() => removeAuction(a)}>
-                        Remove
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {tab === 'gigs' && (
-        <div style={s.tableWrap}>
-          <table style={s.table}>
-            <thead>
-              <tr>
-                <th style={s.th}>Title</th>
-                <th style={s.th}>Seller</th>
-                <th style={s.th}>Category</th>
-                <th style={s.th}>Price</th>
-                <th style={s.th}>Orders</th>
-                <th style={s.th}>Status</th>
-                <th style={s.th}>Created</th>
-                <th style={s.th}>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {gigs.length === 0 && (
-                <tr>
-                  <td style={s.td} colSpan={8}>No gigs found</td>
-                </tr>
-              )}
-              {gigs.map((g) => (
-                <tr key={g._id}>
-                  <td style={s.td}>{g.title}</td>
-                  <td style={s.td}>{g.sellerId?.fullName || 'Unknown'}</td>
-                  <td style={s.td}>{g.category}</td>
-                  <td style={s.td}>{naira(g.startingPrice)}</td>
-                  <td style={s.td}>{g.orders}</td>
-                  <td style={s.td}>
-                    <span
-                      style={s.badge(
-                        g.status === 'active' ? '#16a34a' : g.status === 'paused' ? '#d97706' : '#6b7280'
-                      )}
-                    >
-                      {g.status}
-                    </span>
-                  </td>
-                  <td style={s.td}>{formatDate(g.createdAt)}</td>
-                  <td style={s.td}>
-                    {g.status !== 'completed' && (
-                      <button
-                        style={s.btn(g.status === 'active' ? '#d97706' : '#16a34a')}
-                        onClick={() => toggleGig(g)}
-                      >
-                        {g.status === 'active' ? 'Pause' : 'Reactivate'}
-                      </button>
-                    )}
-                    <button style={s.btn('#dc2626')} onClick={() => removeGig(g)}>
-                      Remove
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {tab === 'transactions' && (
-        <>
-          <label style={s.filterRow}>
-            <input
-              type="checkbox"
-              checked={attentionOnly}
-              onChange={(e) => setAttentionOnly(e.target.checked)}
-            />
-            Show only payments that need attention (disputes, failed payouts, manual refunds)
-          </label>
-          <div style={s.tableWrap}>
-            <table style={s.table}>
+        {tab === 'gigs' && (
+          <div className={`${PANEL} overflow-x-auto`}>
+            <table className="w-full border-collapse">
               <thead>
                 <tr>
-                  <th style={s.th}>Item</th>
-                  <th style={s.th}>Buyer</th>
-                  <th style={s.th}>Seller</th>
-                  <th style={s.th}>Amount</th>
-                  <th style={s.th}>Seller gets</th>
-                  <th style={s.th}>Payment</th>
-                  <th style={s.th}>Payout</th>
-                  <th style={s.th}>Dispute</th>
-                  <th style={s.th}>Date</th>
-                  <th style={s.th}>Action</th>
+                  <th className={TH}>Title</th>
+                  <th className={TH}>Seller</th>
+                  <th className={TH}>Category</th>
+                  <th className={TH}>Price</th>
+                  <th className={TH}>Orders</th>
+                  <th className={TH}>Status</th>
+                  <th className={TH}>Created</th>
+                  <th className={TH}>Action</th>
                 </tr>
               </thead>
               <tbody>
-                {visibleTransactions.length === 0 && (
+                {gigs.length === 0 && (
                   <tr>
-                    <td style={s.td} colSpan={10}>No transactions found</td>
+                    <td className={TD} colSpan={8}>No gigs found</td>
                   </tr>
                 )}
-                {visibleTransactions.map((t) => {
-                  const canResolve =
-                    t.paymentStatus === 'held' && (t.payoutStatus === 'none' || t.payoutStatus === 'failed');
-                  const needsManualRefund = t.paymentStatus === 'captured';
-
-                  return (
-                    <tr key={t._id}>
-                      <td style={s.td}>{itemTitle(t)}</td>
-                      <td style={s.td}>{t.buyerId?.fullName || 'Unknown'}</td>
-                      <td style={s.td}>{t.sellerId?.fullName || 'Unknown'}</td>
-                      <td style={s.td}>{naira(t.amount)}</td>
-                      <td style={s.td}>{naira(t.sellerPayout)}</td>
-                      <td style={s.td}>
-                        <span style={s.badge(paymentColor(t.paymentStatus))}>{t.paymentStatus}</span>
-                      </td>
-                      <td style={s.td}>
-                        <span style={s.badge(payoutColor(t.payoutStatus))}>{t.payoutStatus}</span>
-                        {t.payoutError && <div style={s.small}>{t.payoutError}</div>}
-                      </td>
-                      <td style={s.td}>
-                        <span style={s.badge(disputeColor(t.disputeStatus))}>{t.disputeStatus}</span>
-                        {t.disputeOpenedAt && (
-                          <div style={s.small}>
-                            <strong>Buyer:</strong> {t.disputeReason}
-                          </div>
-                        )}
-                        {t.sellerComplaintAt && (
-                          <div style={s.small}>
-                            <strong>Seller:</strong> {t.sellerComplaintReason}
-                            {t.sellerComplaintNote ? ` - ${t.sellerComplaintNote}` : ''}
-                          </div>
-                        )}
-                        {t.disputeNotes && <div style={s.small}>{t.disputeNotes}</div>}
-                      </td>
-                      <td style={s.td}>{formatDate(t.createdAt)}</td>
-                      <td style={s.td}>
-                        {canResolve && (
-                          <>
-                            <button style={s.btn('#dc2626')} onClick={() => openResolve(t, 'refund')}>
-                              Refund buyer
-                            </button>
-                            {t.payoutStatus === 'failed' ? (
-                              <button style={s.btn('#2563eb')} onClick={() => retryPayout(t)}>
-                                Retry payout
-                              </button>
-                            ) : (
-                              <button style={s.btn('#16a34a')} onClick={() => openResolve(t, 'release')}>
-                                Pay seller
-                              </button>
-                            )}
-                          </>
-                        )}
-                        {needsManualRefund && (
-                          <button style={s.btn('#dc2626')} onClick={() => openResolve(t, 'refund')}>
-                            Refund buyer
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
+                {gigs.map((g) => (
+                  <tr key={g._id}>
+                    <td className={TD}>{g.title}</td>
+                    <td className={TD}>{g.sellerId?.fullName || 'Unknown'}</td>
+                    <td className={TD}>{g.category}</td>
+                    <td className={TD}>{naira(g.startingPrice)}</td>
+                    <td className={TD}>{g.orders}</td>
+                    <td className={TD}>
+                      <Pill tone={gigTone(g.status)}>{g.status}</Pill>
+                    </td>
+                    <td className={TD}>{formatDate(g.createdAt)}</td>
+                    <td className={TD}>
+                      {g.status !== 'completed' && (
+                        <Btn tone={g.status === 'active' ? 'amber' : 'green'} onClick={() => toggleGig(g)}>
+                          {g.status === 'active' ? 'Pause' : 'Reactivate'}
+                        </Btn>
+                      )}
+                      <Btn tone="red" onClick={() => removeGig(g)}>
+                        Remove
+                      </Btn>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
-        </>
-      )}
+        )}
+
+        {tab === 'transactions' && (
+          <>
+            <label className="flex items-center gap-2 mb-4 text-sm text-gray-300">
+              <input
+                type="checkbox"
+                checked={attentionOnly}
+                onChange={(e) => setAttentionOnly(e.target.checked)}
+              />
+              Show only payments that need attention (disputes, failed payouts, manual refunds)
+            </label>
+            <div className={`${PANEL} overflow-x-auto`}>
+              <table className="w-full border-collapse">
+                <thead>
+                  <tr>
+                    <th className={TH}>Item</th>
+                    <th className={TH}>Buyer</th>
+                    <th className={TH}>Seller</th>
+                    <th className={TH}>Amount</th>
+                    <th className={TH}>Seller gets</th>
+                    <th className={TH}>Payment</th>
+                    <th className={TH}>Payout</th>
+                    <th className={TH}>Dispute</th>
+                    <th className={TH}>Date</th>
+                    <th className={TH}>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleTransactions.length === 0 && (
+                    <tr>
+                      <td className={TD} colSpan={10}>No transactions found</td>
+                    </tr>
+                  )}
+                  {visibleTransactions.map((t) => {
+                    const canResolve =
+                      t.paymentStatus === 'held' && (t.payoutStatus === 'none' || t.payoutStatus === 'failed');
+                    const needsManualRefund = t.paymentStatus === 'captured';
+
+                    return (
+                      <tr key={t._id}>
+                        <td className={TD}>{itemTitle(t)}</td>
+                        <td className={TD}>{t.buyerId?.fullName || 'Unknown'}</td>
+                        <td className={TD}>{t.sellerId?.fullName || 'Unknown'}</td>
+                        <td className={TD}>{naira(t.amount)}</td>
+                        <td className={TD}>{naira(t.sellerPayout)}</td>
+                        <td className={TD}>
+                          <Pill tone={paymentTone(t.paymentStatus)}>{t.paymentStatus}</Pill>
+                        </td>
+                        <td className={TD}>
+                          <Pill tone={payoutTone(t.payoutStatus)}>{t.payoutStatus}</Pill>
+                          {t.payoutError && <div className={SMALL}>{t.payoutError}</div>}
+                        </td>
+                        <td className={TD}>
+                          <Pill tone={disputeTone(t.disputeStatus)}>{t.disputeStatus}</Pill>
+                          {t.disputeOpenedAt && (
+                            <div className={SMALL}>
+                              <strong>Buyer:</strong> {t.disputeReason}
+                            </div>
+                          )}
+                          {t.sellerComplaintAt && (
+                            <div className={SMALL}>
+                              <strong>Seller:</strong> {t.sellerComplaintReason}
+                              {t.sellerComplaintNote ? ` - ${t.sellerComplaintNote}` : ''}
+                            </div>
+                          )}
+                          {t.disputeNotes && <div className={SMALL}>{t.disputeNotes}</div>}
+                        </td>
+                        <td className={TD}>{formatDate(t.createdAt)}</td>
+                        <td className={TD}>
+                          {canResolve && (
+                            <>
+                              <Btn tone="red" onClick={() => openResolve(t, 'refund')}>
+                                Refund buyer
+                              </Btn>
+                              {t.payoutStatus === 'failed' ? (
+                                <Btn tone="blue" onClick={() => retryPayout(t)}>
+                                  Retry payout
+                                </Btn>
+                              ) : (
+                                <Btn tone="green" onClick={() => openResolve(t, 'release')}>
+                                  Pay seller
+                                </Btn>
+                              )}
+                            </>
+                          )}
+                          {needsManualRefund && (
+                            <Btn tone="red" onClick={() => openResolve(t, 'refund')}>
+                              Refund buyer
+                            </Btn>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </main>
 
       {resolve && (
-        <div style={s.overlay} onClick={() => !resolving && setResolve(null)}>
-          <div style={s.modal} onClick={(e) => e.stopPropagation()}>
-            <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>
+        <div
+          className="fixed inset-0 bg-black/70 flex items-center justify-center z-[100] p-4"
+          onClick={() => !resolving && setResolve(null)}
+        >
+          <div
+            className="bg-[#12121a] border border-white/10 rounded-2xl p-6 w-full max-w-md text-gray-100"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-xl font-bold text-white mb-2">
               {resolve.action === 'refund' ? 'Refund the buyer?' : 'Pay the seller?'}
             </h2>
-            <p style={{ fontSize: 14, color: '#374151' }}>
+            <p className="text-sm text-gray-300">
               {resolve.action === 'refund'
                 ? `${naira(resolve.tx.amount)} goes back to ${resolve.tx.buyerId?.fullName || 'the buyer'}, and "${itemTitle(
                     resolve.tx
@@ -799,55 +990,41 @@ export default function AdminPage() {
                 : `${naira(resolve.tx.sellerPayout)} is sent to ${resolve.tx.sellerId?.fullName || 'the seller'}.`}
             </p>
             {resolve.tx.disputeOpenedAt && (
-              <p style={{ fontSize: 13, color: '#6b7280', marginTop: 8 }}>
-                Buyer reported: {resolve.tx.disputeReason}
-              </p>
+              <p className="text-sm text-gray-400 mt-2">Buyer reported: {resolve.tx.disputeReason}</p>
             )}
             {resolve.tx.sellerComplaintAt && (
-              <p style={{ fontSize: 13, color: '#6b7280', marginTop: 8 }}>
+              <p className="text-sm text-gray-400 mt-2">
                 Seller reported: {resolve.tx.sellerComplaintReason}
                 {resolve.tx.sellerComplaintNote ? ` - ${resolve.tx.sellerComplaintNote}` : ''}
               </p>
             )}
             {resolve.tx.disputeNotes && (
-              <p style={{ fontSize: 13, color: '#6b7280', marginTop: 8 }}>Notes: {resolve.tx.disputeNotes}</p>
+              <p className="text-sm text-gray-400 mt-2">Notes: {resolve.tx.disputeNotes}</p>
             )}
             <textarea
-              style={s.textarea}
+              className="w-full mt-3 mb-4 p-3 rounded-xl bg-[#0d0d14] border border-white/10 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
               rows={3}
               maxLength={500}
               placeholder="Note for both people (optional)"
               value={resolveNote}
               onChange={(e) => setResolveNote(e.target.value)}
             />
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
+            <div className="flex justify-end gap-3">
               <button
+                type="button"
                 onClick={() => setResolve(null)}
                 disabled={resolving}
-                style={{
-                  padding: '8px 18px',
-                  borderRadius: 8,
-                  border: '1px solid #d1d5db',
-                  background: '#ffffff',
-                  cursor: 'pointer',
-                  fontWeight: 600,
-                }}
+                className="px-5 py-2 rounded-xl border border-white/15 text-gray-200 font-semibold hover:bg-white/5 disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
+                type="button"
                 onClick={submitResolve}
                 disabled={resolving}
-                style={{
-                  padding: '8px 18px',
-                  borderRadius: 8,
-                  border: 'none',
-                  background: resolve.action === 'refund' ? '#dc2626' : '#16a34a',
-                  color: '#ffffff',
-                  cursor: 'pointer',
-                  fontWeight: 700,
-                  opacity: resolving ? 0.6 : 1,
-                }}
+                className={`px-5 py-2 rounded-xl font-bold text-white disabled:opacity-60 ${
+                  resolve.action === 'refund' ? 'bg-red-600 hover:bg-red-500' : 'bg-emerald-600 hover:bg-emerald-500'
+                }`}
               >
                 {resolving ? 'Working...' : resolve.action === 'refund' ? 'Refund buyer' : 'Pay seller'}
               </button>
