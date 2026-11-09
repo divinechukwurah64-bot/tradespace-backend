@@ -134,7 +134,7 @@ export default function TermsPage() {
       <p>
         For a transaction issue, contact the other party first where it is safe and practical, and
         keep relevant messages, receipts and listing details. You may also contact TradeSpace at
-        {` `}<strong>{Divinechukwurah64@gmail.com}</strong>. We will review platform complaints and aim to respond
+        {` `}<strong>{SUPPORT_EMAIL}</strong>. We will review platform complaints and aim to respond
         within a reasonable time. Any internal review relates to TradeSpace’s platform services; it
         does not determine a user’s legal rights or prevent you from seeking a remedy from the seller,
         a relevant regulator, the Federal Competition and Consumer Protection Commission (FCCPC),
@@ -187,7 +187,7 @@ export default function TermsPage() {
         right to complain to a regulator or seek another remedy available under Nigerian law.
       </p>
       <p>
-        Questions, complaints or requests about these terms? Email <strong>{Divinechukwurah64@gmail.com}</strong>.
+        Questions, complaints or requests about these terms? Email <strong>{SUPPORT_EMAIL}</strong>.
         Please include enough information for us to identify the relevant account or transaction,
         but do not send passwords, PINs or one-time passwords.
       </p>
