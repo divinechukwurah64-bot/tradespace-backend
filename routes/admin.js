@@ -8,7 +8,7 @@ const auth = require('../middleware/auth');
 const admin = require('../middleware/admin');
 const paystack = require('../utils/paystack');
 const notify = require('../utils/notify');
-const { attemptPayout } = require('../utils/payments');
+const { attemptPayout, AUTO_PAYOUTS } = require('../utils/payments');
 
 const router = express.Router();
 
@@ -119,9 +119,10 @@ router.get('/overview', async (req, res) => {
         { $match: { paymentStatus: 'held' } },
         { $group: { _id: null, owed: { $sum: '$sellerPayout' }, count: { $sum: 1 } } }
       ]),
+      // Sales where the buyer confirmed (or 7 days passed) and the seller still has to be paid
       Transaction.countDocuments({
         paymentStatus: 'held',
-        payoutStatus: { $in: ['none', 'queued', 'failed'] },
+        payoutStatus: { $in: ['queued', 'failed'] },
         disputeStatus: { $ne: 'filed' }
       })
     ]);
@@ -153,6 +154,7 @@ router.get('/overview', async (req, res) => {
       owedToSellers: held[0] ? round2(held[0].owed) : 0,
       heldCount: held[0] ? held[0].count : 0,
       readyToPay,
+      autoPayouts: AUTO_PAYOUTS,
       daily,
       categories
     });
@@ -490,12 +492,19 @@ router.post('/transactions/:id/refund', async (req, res) => {
   }
 });
 
-// PAY THE SELLER - the dispute is decided for the seller, or a failed payout is retried
+// PAY THE SELLER BY PAYSTACK TRANSFER - only while automatic payouts are on.
+// With them off, use the manual payout route below.
 router.post('/transactions/:id/release', async (req, res) => {
   try {
     const { id } = req.params;
     if (!mongoose.isValidObjectId(id)) {
       return res.status(400).json({ error: 'Invalid transaction' });
+    }
+
+    if (!AUTO_PAYOUTS) {
+      return res.status(409).json({
+        error: 'Automatic payouts are turned off. Send the money from your bank and use "Paid manually" instead.'
+      });
     }
 
     const note = typeof req.body.note === 'string' ? req.body.note.trim().slice(0, 500) : '';

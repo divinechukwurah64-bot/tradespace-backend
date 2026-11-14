@@ -15,6 +15,10 @@ const MAX_PAYOUT_ATTEMPTS = 60;
 // A payment stuck in "captured" for longer than this is treated as an interrupted settlement
 const CAPTURE_STALE_MS = 2 * 60 * 1000;
 
+// Automatic seller payouts by Paystack transfer. OFF unless AUTO_PAYOUTS=true is set on the server.
+// While it is off, a sale that is ready to pay waits for the admin to pay the seller by hand.
+const AUTO_PAYOUTS = process.env.AUTO_PAYOUTS === 'true';
+
 const money = (n) => `₦${Number(n).toLocaleString()}`;
 const idOf = (value) => (value ? String(value._id || value) : null);
 
@@ -201,11 +205,12 @@ const processStuckCaptures = async () => {
 
 // ---------- Paying the seller ----------
 
-// Approves a payment for release and queues the payout
+// Approves a payment for release. With automatic payouts on, a transfer is scheduled.
+// With them off, the sale just becomes "ready to pay" and waits for the admin to pay by hand.
 const queuePayout = async (tx) => {
   tx.inspectionStatus = 'approved';
   tx.payoutStatus = 'queued';
-  tx.payoutNextAttemptAt = new Date();
+  tx.payoutNextAttemptAt = AUTO_PAYOUTS ? new Date() : null;
   tx.autoReleaseAt = null;
   await tx.save();
   return tx;
@@ -263,8 +268,11 @@ const scheduleRetry = async (txId, message) => {
   return tx;
 };
 
-// Sends the seller their money. Checks any earlier attempt first, so nobody is paid twice.
+// Sends the seller their money by Paystack transfer. Does nothing while automatic payouts are off.
+// Checks any earlier attempt first, so nobody is paid twice.
 const attemptPayout = async (txId) => {
+  if (!AUTO_PAYOUTS) return null;
+
   const tx = await Transaction.findOneAndUpdate(
     {
       _id: txId,
@@ -521,16 +529,36 @@ const processAutoReleases = async () => {
   for (const tx of due) {
     try {
       await queuePayout(tx);
-      await notify(tx.sellerId, {
-        type: 'payment',
-        title: 'Payment released',
-        message: `The buyer did not report a problem, so ${money(tx.sellerPayout)} is being sent to your bank.`,
-        link: `/auctions/${tx.auctionId}`
-      });
+
+      const auction = await Auction.findById(tx.auctionId).select('title');
+      const title = auction ? auction.title : 'the item';
+
+      if (AUTO_PAYOUTS) {
+        await notify(tx.sellerId, {
+          type: 'payment',
+          title: 'Payment released',
+          message: `The buyer did not report a problem, so ${money(tx.sellerPayout)} is being sent to your bank.`,
+          link: `/auctions/${tx.auctionId}`
+        });
+      } else {
+        await notify(tx.sellerId, {
+          type: 'payment',
+          title: 'Your payout is ready',
+          message: `The buyer did not report a problem, so ${money(tx.sellerPayout)} for "${title}" is ready. We will send it to your bank account soon.`,
+          link: `/auctions/${tx.auctionId}`
+        });
+        await notifyAdmins({
+          type: 'payment',
+          title: 'A seller payout is ready',
+          message: `${money(tx.sellerPayout)} for "${title}" is ready to be paid to the seller.`,
+          link: '/admin'
+        });
+      }
+
       await notify(tx.buyerId, {
         type: 'payment',
         title: 'Payment released to the seller',
-        message: 'You did not report a problem within 7 days, so the seller has been paid.',
+        message: 'You did not report a problem within 7 days, so the payment is being released to the seller.',
         link: `/auctions/${tx.auctionId}`
       });
     } catch (err) {
@@ -539,23 +567,37 @@ const processAutoReleases = async () => {
   }
 };
 
-// Sends queued payouts and checks stuck ones
+// Sends queued payouts (only while automatic payouts are on) and checks stuck ones
 const processPayouts = async () => {
   const now = new Date();
 
-  const due = await Transaction.find({
-    paymentStatus: 'held',
-    payoutStatus: 'queued',
-    disputeStatus: { $ne: 'filed' },
-    payoutNextAttemptAt: { $lte: now }
-  })
-    .select('_id')
-    .limit(20);
+  if (AUTO_PAYOUTS) {
+    // Sales that became ready while payouts were manual have no attempt time. Give them one now.
+    await Transaction.updateMany(
+      {
+        paymentStatus: 'held',
+        payoutStatus: 'queued',
+        payoutNextAttemptAt: null,
+        disputeStatus: { $ne: 'filed' }
+      },
+      { $set: { payoutNextAttemptAt: now } }
+    );
 
-  for (const tx of due) {
-    await attemptPayout(tx._id);
+    const due = await Transaction.find({
+      paymentStatus: 'held',
+      payoutStatus: 'queued',
+      disputeStatus: { $ne: 'filed' },
+      payoutNextAttemptAt: { $lte: now }
+    })
+      .select('_id')
+      .limit(20);
+
+    for (const tx of due) {
+      await attemptPayout(tx._id);
+    }
   }
 
+  // Always check payouts that were already sent to Paystack, so nobody is paid twice
   const stuck = await Transaction.find({
     paymentStatus: 'held',
     payoutStatus: 'processing',
@@ -589,13 +631,14 @@ const runJobs = async () => {
 const startPaymentJobs = () => {
   setInterval(runJobs, 5 * 60 * 1000);
   setTimeout(runJobs, 15 * 1000);
-  console.log('Payment deadline check started');
+  console.log(`Payment deadline check started (automatic payouts ${AUTO_PAYOUTS ? 'ON' : 'OFF'})`);
 };
 
 module.exports = {
   PAYMENT_WINDOW_MS,
   AUTO_RELEASE_MS,
   MAX_DEFAULTS,
+  AUTO_PAYOUTS,
   notifyAdmins,
   settleTransaction,
   queuePayout,

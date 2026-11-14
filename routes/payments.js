@@ -12,7 +12,8 @@ const {
   attemptPayout,
   handleTransferResult,
   notifyAdmins,
-  AUTO_RELEASE_MS
+  AUTO_RELEASE_MS,
+  AUTO_PAYOUTS
 } = require('../utils/payments');
 const { getFrontendBase } = require('../utils/frontendUrl');
 
@@ -357,6 +358,7 @@ router.get('/auctions/:id/status', auth, async (req, res) => {
 
 // I RECEIVED THE ITEM - the buyer releases the payment to the seller.
 // If only the seller has complained, this also closes that complaint.
+// With automatic payouts off, the sale becomes "ready to pay" and the admin pays the seller by hand.
 router.post('/auctions/:id/confirm-received', auth, async (req, res) => {
   try {
     const { id } = req.params;
@@ -385,7 +387,7 @@ router.post('/auctions/:id/confirm-received', auth, async (req, res) => {
     const update = {
       inspectionStatus: 'approved',
       payoutStatus: 'queued',
-      payoutNextAttemptAt: now,
+      payoutNextAttemptAt: AUTO_PAYOUTS ? now : null,
       autoReleaseAt: null
     };
     if (closingSellerComplaint) {
@@ -418,11 +420,23 @@ router.post('/auctions/:id/confirm-received', auth, async (req, res) => {
     await notify(claimed.sellerId, {
       type: 'payment',
       title: 'The buyer confirmed receipt',
-      message: `${money(claimed.sellerPayout)} is being sent to your bank account.`,
+      message: AUTO_PAYOUTS
+        ? `${money(claimed.sellerPayout)} is being sent to your bank account.`
+        : `${money(claimed.sellerPayout)} is ready. We will send it to your bank account soon.`,
       link: `/auctions/${claimed.auctionId}`
     });
 
-    await attemptPayout(claimed._id);
+    if (AUTO_PAYOUTS) {
+      await attemptPayout(claimed._id);
+    } else {
+      const auction = await Auction.findById(claimed.auctionId).select('title');
+      await notifyAdmins({
+        type: 'payment',
+        title: 'A seller payout is ready',
+        message: `${money(claimed.sellerPayout)} for "${auction ? auction.title : 'an item'}" is ready to be paid to the seller.`,
+        link: '/admin'
+      });
+    }
 
     const fresh = await Transaction.findById(claimed._id).select('paymentStatus payoutStatus');
     res.json({ paymentStatus: fresh.paymentStatus, payoutStatus: fresh.payoutStatus });

@@ -24,6 +24,7 @@ type Overview = {
   owedToSellers: number;
   heldCount: number;
   readyToPay: number;
+  autoPayouts?: boolean;
   daily: { date: string; total: number; orders: number }[];
   categories: { category: string; total: number; count: number }[];
 };
@@ -70,6 +71,7 @@ type AdminTransaction = {
   payoutStatus: string;
   payoutError?: string;
   inspectionStatus: string;
+  autoReleaseAt?: string | null;
   disputeStatus: string;
   disputeReason?: string;
   disputeNotes?: string;
@@ -193,7 +195,18 @@ const isPayable = (t: AdminTransaction) =>
 const needsAttention = (t: AdminTransaction) =>
   t.disputeStatus === 'filed' || t.payoutStatus === 'failed' || t.paymentStatus === 'captured';
 
-const isReady = (t: AdminTransaction) => isPayable(t) && t.disputeStatus !== 'filed';
+// The buyer confirmed (or 7 days passed) and the seller still has to be paid
+const isReady = (t: AdminTransaction) =>
+  isPayable(t) && t.payoutStatus !== 'none' && t.disputeStatus !== 'filed';
+
+// With automatic payouts off, "none" means the buyer has not confirmed yet and "queued" means ready to pay
+const payoutLabel = (t: AdminTransaction, auto: boolean) => {
+  if (!auto && t.paymentStatus === 'held') {
+    if (t.payoutStatus === 'none') return 'not due yet';
+    if (t.payoutStatus === 'queued') return 'ready to pay';
+  }
+  return t.payoutStatus;
+};
 
 function Pill({ tone, children }: { tone: Tone; children: React.ReactNode }) {
   return (
@@ -660,6 +673,8 @@ export default function AdminPage() {
     );
   }
 
+  const autoPayouts = !!overview?.autoPayouts;
+
   const visibleTransactions =
     txFilter === 'attention'
       ? transactions.filter(needsAttention)
@@ -1061,6 +1076,13 @@ export default function AdminPage() {
 
         {tab === 'transactions' && (
           <>
+            {!autoPayouts && (
+              <div className="bg-amber-500/10 border border-amber-500/30 text-amber-200 rounded-xl px-4 py-3 mb-4 text-sm">
+                Seller payouts are manual. When a row says &quot;ready to pay&quot;, send the seller their share from
+                your bank, then press Paid manually.
+              </div>
+            )}
+
             <div className="flex flex-wrap gap-2 mb-4">
               <button type="button" onClick={() => setTxFilter('all')} className={filterButton(txFilter === 'all')}>
                 All
@@ -1117,8 +1139,16 @@ export default function AdminPage() {
                           <Pill tone={paymentTone(t.paymentStatus)}>{t.paymentStatus}</Pill>
                         </td>
                         <td className={TD}>
-                          <Pill tone={payoutTone(t.payoutStatus)}>{t.payoutStatus}</Pill>
-                          {t.payoutError && <div className={SMALL}>{t.payoutError}</div>}
+                          <Pill
+                            tone={
+                              !autoPayouts && t.paymentStatus === 'held' && t.payoutStatus === 'queued'
+                                ? 'amber'
+                                : payoutTone(t.payoutStatus)
+                            }
+                          >
+                            {payoutLabel(t, autoPayouts)}
+                          </Pill>
+                          {t.payoutError && autoPayouts && <div className={SMALL}>{t.payoutError}</div>}
                         </td>
                         <td className={TD}>
                           <Pill tone={disputeTone(t.disputeStatus)}>{t.disputeStatus}</Pill>
@@ -1142,12 +1172,12 @@ export default function AdminPage() {
                               <Btn tone="red" onClick={() => openResolve(t, 'refund')}>
                                 Refund buyer
                               </Btn>
-                              {t.payoutStatus === 'none' && (
+                              {autoPayouts && t.payoutStatus === 'none' && (
                                 <Btn tone="green" onClick={() => openResolve(t, 'release')}>
                                   Pay via Paystack
                                 </Btn>
                               )}
-                              {t.payoutStatus === 'failed' && (
+                              {autoPayouts && t.payoutStatus === 'failed' && (
                                 <Btn tone="blue" onClick={() => retryPayout(t)}>
                                   Retry payout
                                 </Btn>
@@ -1317,6 +1347,16 @@ export default function AdminPage() {
             {manual.disputeStatus === 'filed' && (
               <p className="text-sm text-amber-300 mt-3">
                 This sale has an open problem. Recording the payout closes it in the seller&apos;s favour.
+              </p>
+            )}
+
+            {manual.disputeStatus !== 'filed' && manual.payoutStatus === 'none' && (
+              <p className="text-sm text-amber-300 mt-3">
+                The buyer has not confirmed yet
+                {manual.autoReleaseAt
+                  ? ` and can still report a problem until ${formatDate(manual.autoReleaseAt)}`
+                  : ''}
+                . Only pay now if you are sure.
               </p>
             )}
 
