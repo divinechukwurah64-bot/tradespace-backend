@@ -92,6 +92,12 @@ type AdminTransaction = {
   gigId?: { title?: string } | null;
 };
 
+type SellerAccount = {
+  accountNumber: string | null;
+  bankName: string | null;
+  accountName: string | null;
+};
+
 type TabName = 'overview' | 'users' | 'auctions' | 'gigs' | 'transactions';
 type TxFilter = 'all' | 'attention' | 'ready';
 type Tone = 'green' | 'blue' | 'amber' | 'red' | 'gray';
@@ -321,6 +327,9 @@ export default function AdminPage() {
   const [manualNote, setManualNote] = useState('');
   const [manualSent, setManualSent] = useState(false);
   const [manualBusy, setManualBusy] = useState(false);
+  const [manualAccount, setManualAccount] = useState<SellerAccount | null>(null);
+  const [manualAccountBusy, setManualAccountBusy] = useState(false);
+  const [manualCopied, setManualCopied] = useState(false);
 
   const getErrorMessage = (err: any) =>
     err?.response?.data?.error || err?.message || 'Something went wrong';
@@ -575,7 +584,44 @@ export default function AdminPage() {
     setManualRef('');
     setManualNote('');
     setManualSent(false);
+    setManualAccount(null);
+    setManualCopied(false);
     setManual(tx);
+  };
+
+  // Closing the window also forgets the account number
+  const closeManual = () => {
+    setManual(null);
+    setManualAccount(null);
+    setManualCopied(false);
+  };
+
+  const revealAccount = async () => {
+    if (!manual) return;
+    setManualAccountBusy(true);
+    try {
+      const res = await API.get(`/users/admin/seller-account/${manual._id}`);
+      setManualAccount({
+        accountNumber: res.data.accountNumber || null,
+        bankName: res.data.bankName || null,
+        accountName: res.data.accountName || null,
+      });
+    } catch (err: any) {
+      toast.error(getErrorMessage(err));
+    } finally {
+      setManualAccountBusy(false);
+    }
+  };
+
+  const copyAccount = async () => {
+    if (!manualAccount?.accountNumber) return;
+    try {
+      await navigator.clipboard.writeText(manualAccount.accountNumber);
+      setManualCopied(true);
+      setTimeout(() => setManualCopied(false), 2000);
+    } catch (err) {
+      toast.error('Could not copy. Select the number and copy it by hand.');
+    }
   };
 
   const submitManual = async () => {
@@ -591,7 +637,7 @@ export default function AdminPage() {
         note: manualNote.trim(),
       });
       toast.success('Marked as paid. The seller has been told.');
-      setManual(null);
+      closeManual();
       await Promise.all([loadTransactions(), loadStats(), loadOverview()]);
     } catch (err: any) {
       toast.error(getErrorMessage(err));
@@ -1193,7 +1239,7 @@ export default function AdminPage() {
       {manual && (
         <div
           className="fixed inset-0 bg-black/70 flex items-center justify-center z-[100] p-4"
-          onClick={() => !manualBusy && setManual(null)}
+          onClick={() => !manualBusy && closeManual()}
         >
           <div
             className="bg-[#12121a] border border-white/10 rounded-2xl p-6 w-full max-w-md max-h-[90vh] overflow-y-auto text-gray-100"
@@ -1224,9 +1270,43 @@ export default function AdminPage() {
                 <span className="text-gray-400">Phone:</span> {manual.sellerId?.phone || '-'}
               </p>
             </div>
+
+            <div className="mt-3">
+              {manualAccount === null ? (
+                <button
+                  type="button"
+                  onClick={revealAccount}
+                  disabled={manualAccountBusy}
+                  className="px-4 py-2 rounded-xl border border-white/15 text-sm font-semibold text-gray-200 hover:bg-white/5 disabled:opacity-50"
+                >
+                  {manualAccountBusy ? 'Loading...' : 'Show full account number'}
+                </button>
+              ) : manualAccount.accountNumber ? (
+                <div className="bg-white/5 border border-white/10 rounded-xl p-3 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs text-gray-400">Account number</p>
+                    <p className="text-lg font-bold tracking-wider text-white select-all break-all">
+                      {manualAccount.accountNumber}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={copyAccount}
+                    className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold flex-shrink-0"
+                  >
+                    {manualCopied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+              ) : (
+                <p className="text-sm text-amber-300">
+                  The full number is not stored for this seller. Ask them to save their payout account again on their
+                  payout page, or message them for it.
+                </p>
+              )}
+            </div>
+
             <p className="text-xs text-gray-400 mt-2">
-              The full account number is not stored on TradeSpace. Ask the seller for it in a message, and check it
-              against the details above.{' '}
+              Check the name on the account against the seller before you send.{' '}
               {manual.sellerId?._id && (
                 <Link href={`/messages/${manual.sellerId._id}`} className="text-blue-300 hover:underline">
                   Message the seller
@@ -1272,7 +1352,7 @@ export default function AdminPage() {
             <div className="flex justify-end gap-3 mt-5">
               <button
                 type="button"
-                onClick={() => setManual(null)}
+                onClick={closeManual}
                 disabled={manualBusy}
                 className="px-5 py-2 rounded-xl border border-white/15 text-gray-200 font-semibold hover:bg-white/5 disabled:opacity-50"
               >

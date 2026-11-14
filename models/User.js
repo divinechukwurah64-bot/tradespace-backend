@@ -17,6 +17,8 @@ const userSchema = new mongoose.Schema({
   bankAccountNumber: { type: String, default: null },
   bankAccountLast4: { type: String, default: null },
   bankCode: { type: String, default: null },
+  // The full account number, encrypted. Never sent to the browser except to an admin paying a seller by hand.
+  bankAccountEncrypted: { type: String, default: null, select: false },
   paystackRecipientCode: { type: String, default: null, select: false },
   paymentDefaults: { type: Number, default: 0 },
   biddingBlocked: { type: Boolean, default: false },

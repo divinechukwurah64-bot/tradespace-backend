@@ -6,7 +6,9 @@ const Gig = require('../models/Gig');
 const Review = require('../models/Review');
 const Transaction = require('../models/Transaction');
 const auth = require('../middleware/auth');
+const admin = require('../middleware/admin');
 const paystack = require('../utils/paystack');
+const secretBox = require('../utils/secretBox');
 
 const router = express.Router();
 
@@ -235,6 +237,14 @@ router.put('/me/bank', auth, async (req, res) => {
     user.bankAccountLast4 = accountNumber.slice(-4);
     user.bankAccountNumber = null;
     user.paystackRecipientCode = recipientCode;
+
+    // The full number is kept encrypted, so a payout can be sent by hand
+    if (secretBox.isConfigured()) {
+      user.bankAccountEncrypted = secretBox.encryptText(accountNumber);
+    } else {
+      console.error('BANK_ENCRYPTION_KEY is not set, so the full account number was not stored');
+    }
+
     user.updatedAt = new Date();
     await user.save();
 
@@ -246,6 +256,56 @@ router.put('/me/bank', auth, async (req, res) => {
     });
   } catch (err) {
     sendBankError(err, res, 'PUT /users/me/bank');
+  }
+});
+
+// ADMIN ONLY - the payout account of the seller on one sale, so the admin can pay them by hand.
+// The full number is decrypted here and sent to nobody else.
+router.get('/admin/seller-account/:txId', auth, admin, async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.txId)) {
+      return res.status(400).json({ error: 'Invalid transaction' });
+    }
+
+    const tx = await Transaction.findById(req.params.txId).select('sellerId');
+    if (!tx) {
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+
+    const seller = await User.findById(tx.sellerId).select(
+      'bankName bankAccountName bankAccountLast4 +bankAccountEncrypted'
+    );
+    if (!seller) {
+      return res.status(404).json({ error: 'Seller not found' });
+    }
+
+    let accountNumber = null;
+    if (seller.bankAccountEncrypted) {
+      if (!secretBox.isConfigured()) {
+        return res.status(409).json({ error: 'The server has no BANK_ENCRYPTION_KEY set, so the number cannot be read' });
+      }
+      try {
+        accountNumber = secretBox.decryptText(seller.bankAccountEncrypted);
+      } catch (err) {
+        console.error('Could not decrypt a stored account number:', err.message);
+        return res.status(409).json({
+          error: 'The stored account number cannot be read. The encryption key may have changed. Ask the seller to save their payout account again.'
+        });
+      }
+    }
+
+    console.log(`Admin ${req.user.userId} viewed the payout account for transaction ${tx._id}`);
+
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      bankName: seller.bankName,
+      accountName: seller.bankAccountName,
+      accountLast4: seller.bankAccountLast4,
+      accountNumber
+    });
+  } catch (err) {
+    console.error('GET /users/admin/seller-account error:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
