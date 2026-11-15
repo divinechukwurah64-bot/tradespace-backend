@@ -1,17 +1,66 @@
+require('dotenv').config();
+
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const dotenv = require('dotenv');
 const http = require('http');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const socketIO = require('socket.io');
 const User = require('./models/User');
 const ErrorLog = require('./models/ErrorLog');
 const { startPaymentJobs } = require('./utils/payments');
 
-dotenv.config();
+// ---------- Settings check ----------
+
+const isProduction =
+  process.env.NODE_ENV === 'production' ||
+  !!process.env.RAILWAY_ENVIRONMENT_NAME ||
+  !!process.env.RAILWAY_ENVIRONMENT;
+
+const REQUIRED_SETTINGS = ['MONGO_URI', 'JWT_SECRET', 'FRONTEND_URL'];
+const missingRequired = REQUIRED_SETTINGS.filter((name) => !process.env[name]);
+
+if (missingRequired.length) {
+  console.error(`Missing required settings: ${missingRequired.join(', ')}. The server will not start.`);
+  process.exit(1);
+}
+
+const settingWarnings = [];
+if (process.env.JWT_SECRET.length < 32) {
+  settingWarnings.push('JWT_SECRET is shorter than 32 characters. Use a longer random value.');
+}
+if (!process.env.PAYSTACK_SECRET_KEY) {
+  settingWarnings.push('PAYSTACK_SECRET_KEY is not set, so payments will not work.');
+} else if (isProduction && process.env.PAYSTACK_SECRET_KEY.startsWith('sk_test_')) {
+  settingWarnings.push('PAYSTACK_SECRET_KEY is a TEST key while running in production.');
+}
+if (!/^[0-9a-fA-F]{64}$/.test(process.env.BANK_ENCRYPTION_KEY || '')) {
+  settingWarnings.push('BANK_ENCRYPTION_KEY is missing or not 64 hex characters, so seller account numbers cannot be stored.');
+}
+if (!process.env.BREVO_API_KEY && !process.env.RESEND_API_KEY) {
+  settingWarnings.push('Neither BREVO_API_KEY nor RESEND_API_KEY is set, so emails will not be sent.');
+}
+if (process.env.BREVO_API_KEY && process.env.RESEND_API_KEY) {
+  settingWarnings.push('Both BREVO_API_KEY and RESEND_API_KEY are set. Resend wins, so unset it if you use Brevo.');
+}
+if (!process.env.MAIL_FROM) {
+  settingWarnings.push('MAIL_FROM is not set.');
+}
+if (!process.env.SUPPORT_EMAIL) {
+  settingWarnings.push('SUPPORT_EMAIL is not set.');
+}
+if (!process.env.LIVEKIT_URL || !process.env.LIVEKIT_API_KEY || !process.env.LIVEKIT_API_SECRET) {
+  settingWarnings.push('LiveKit settings are incomplete, so live streams will not work.');
+}
+if (isProduction && /localhost|127\.0\.0\.1/i.test(process.env.FRONTEND_URL)) {
+  settingWarnings.push('FRONTEND_URL includes localhost while running in production.');
+}
+for (const warning of settingWarnings) {
+  console.warn(`SETTINGS WARNING: ${warning}`);
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -84,6 +133,31 @@ app.use(
   })
 );
 
+// ---------- Health check ----------
+// Answers 200 only when the database really responds. Monitors and Railway can use it.
+// It sits before the rate limit, so frequent checks are never blocked.
+
+const withTimeout = (promise, ms) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))
+  ]);
+
+app.get('/health', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({ status: 'unavailable', database: 'disconnected' });
+  }
+
+  try {
+    await withTimeout(mongoose.connection.db.command({ ping: 1 }), 2500);
+    return res.json({ status: 'ok', database: 'connected', uptimeSeconds: Math.round(process.uptime()) });
+  } catch (err) {
+    return res.status(503).json({ status: 'unavailable', database: 'not responding' });
+  }
+});
+
 // ---------- CORS ----------
 
 // FRONTEND_URL can hold one or more origins, comma separated:
@@ -131,6 +205,23 @@ const io = socketIO(server, {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
+// ---------- General rate limit ----------
+// A safety net for the whole API: 300 requests a minute per IP. Routes keep their own, tighter limits.
+// The Paystack webhook is exempt, because Paystack can send bursts and retries.
+// These counters live in this process. That is fine for one server. If you ever run more than one,
+// move them to a shared store such as Redis.
+
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.originalUrl.startsWith('/api/payments/webhook'),
+  message: { error: 'Too many requests. Please slow down and try again in a minute.' }
+});
+
+app.use('/api', apiLimiter);
+
 // The raw body is kept so the Paystack webhook signature can be checked
 app.use(
   express.json({
@@ -164,19 +255,33 @@ app.use((req, res, next) => {
   next();
 });
 
-mongoose.connect(process.env.MONGO_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true
-})
-.then(() => {
-  console.log('MongoDB connected');
-  startPaymentJobs();
-})
-.catch(err => console.log('MongoDB connection error:', err));
+// ---------- Database ----------
 
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok' });
+mongoose.connection.on('disconnected', () => {
+  console.error('MongoDB disconnected');
 });
+mongoose.connection.on('reconnected', () => {
+  console.log('MongoDB reconnected');
+});
+mongoose.connection.on('error', (err) => {
+  console.error('MongoDB error:', err.message);
+});
+
+mongoose
+  .connect(process.env.MONGO_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
+  })
+  .then(() => {
+    console.log('MongoDB connected');
+    startPaymentJobs();
+  })
+  .catch((err) => {
+    // Without a database the site cannot work. Exit so Railway restarts the server
+    // and the deploy shows as failed, instead of leaving a half-working server running.
+    console.error('MongoDB connection error:', err.message);
+    setTimeout(() => process.exit(1), 1000);
+  });
 
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/auctions', require('./routes/auctions'));

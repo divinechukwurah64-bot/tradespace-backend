@@ -37,6 +37,9 @@ export default function RootLayout({
         <LoadingScreen />
         <Navbar />
         {children}
+        <footer className="mt-auto w-full border-t border-gray-200 px-4 py-6 text-center text-sm text-gray-600 dark:border-gray-800 dark:text-gray-400">
+          @dallas empire inc
+        </footer>
       </body>
     </html>
   );
