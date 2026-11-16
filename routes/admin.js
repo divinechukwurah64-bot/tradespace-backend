@@ -8,7 +8,7 @@ const auth = require('../middleware/auth');
 const admin = require('../middleware/admin');
 const paystack = require('../utils/paystack');
 const notify = require('../utils/notify');
-const { attemptPayout, AUTO_PAYOUTS } = require('../utils/payments');
+const { payoutNow, AUTO_PAYOUTS } = require('../utils/payments');
 
 const router = express.Router();
 
@@ -492,19 +492,15 @@ router.post('/transactions/:id/refund', async (req, res) => {
   }
 });
 
-// PAY THE SELLER BY PAYSTACK TRANSFER - only while automatic payouts are on.
-// With them off, use the manual payout route below.
+// PAY THE SELLER BY PAYSTACK TRANSFER - the "Pay via Paystack" button.
+// Tries one transfer right now. Works whether AUTO_PAYOUTS is on or off.
+// If Paystack refuses (for example a Starter account), nothing changes and the sale stays
+// "ready to pay", so you can use the manual payout route below instead.
 router.post('/transactions/:id/release', async (req, res) => {
   try {
     const { id } = req.params;
     if (!mongoose.isValidObjectId(id)) {
       return res.status(400).json({ error: 'Invalid transaction' });
-    }
-
-    if (!AUTO_PAYOUTS) {
-      return res.status(409).json({
-        error: 'Automatic payouts are turned off. Send the money from your bank and use "Paid manually" instead.'
-      });
     }
 
     const note = typeof req.body.note === 'string' ? req.body.note.trim().slice(0, 500) : '';
@@ -516,60 +512,56 @@ router.post('/transactions/:id/release', async (req, res) => {
 
     const wasDisputed = current.disputeStatus === 'filed';
 
-    const claimed = await Transaction.findOneAndUpdate(
-      {
-        _id: id,
-        paymentStatus: 'held',
-        payoutStatus: { $in: ['none', 'failed'] }
-      },
+    const result = await payoutNow(id);
+
+    if (!result.ok) {
+      return res.status(result.httpStatus || 400).json({ error: result.error });
+    }
+
+    // Paystack accepted the transfer (or it already went through). Record the review outcome.
+    const now = new Date();
+    await Transaction.updateOne(
+      { _id: id },
       {
         $set: {
-          payoutStatus: 'queued',
-          payoutNextAttemptAt: new Date(),
-          payoutError: '',
           inspectionStatus: 'approved',
           autoReleaseAt: null,
           disputeStatus: wasDisputed ? 'resolved' : current.disputeStatus,
-          disputeResolvedAt: wasDisputed ? new Date() : current.disputeResolvedAt,
+          disputeResolvedAt: wasDisputed ? now : current.disputeResolvedAt,
           disputeNotes: wasDisputed
             ? joinNotes(current.disputeNotes, `Admin paid the seller${note ? `: ${note}` : ''}`)
             : current.disputeNotes
         }
-      },
-      { new: true }
+      }
     );
 
-    if (!claimed) {
-      return res.status(409).json({
-        error: 'This payment cannot be released. It may already be paid out, being paid out, or refunded.'
-      });
-    }
-
-    const auction = await Auction.findById(claimed.auctionId).select('title');
+    const auction = await Auction.findById(current.auctionId).select('title');
     const title = auction ? auction.title : 'the item';
 
-    await notify(claimed.sellerId, {
-      type: 'payment',
-      title: 'Your payout is on its way',
-      message: `${money(claimed.sellerPayout)} for "${title}" is being sent to your bank.${note ? ` Note from our team: ${note}` : ''}`,
-      link: `/auctions/${claimed.auctionId}`
-    });
+    // If the transfer already finished, the seller was told "You have been paid" already
+    if (!result.paid) {
+      await notify(current.sellerId, {
+        type: 'payment',
+        title: 'Your payout is on its way',
+        message: `${money(current.sellerPayout)} for "${title}" is being sent to your bank.${note ? ` Note from our team: ${note}` : ''}`,
+        link: `/auctions/${current.auctionId}`
+      });
+    }
     if (wasDisputed) {
-      await notify(claimed.buyerId, {
+      await notify(current.buyerId, {
         type: 'payment',
         title: 'Your reported problem was reviewed',
         message: `After review, the payment for "${title}" was released to the seller.${note ? ` Note from our team: ${note}` : ''}`,
-        link: `/auctions/${claimed.auctionId}`
+        link: `/auctions/${current.auctionId}`
       });
     }
-
-    await attemptPayout(claimed._id);
 
     const fresh = await Transaction.findById(id).select('paymentStatus payoutStatus payoutError');
     res.json({
       paymentStatus: fresh.paymentStatus,
       payoutStatus: fresh.payoutStatus,
-      payoutError: fresh.payoutError
+      payoutError: fresh.payoutError,
+      pending: !!result.pending
     });
   } catch (err) {
     console.error('POST /admin/transactions/:id/release error:', err);

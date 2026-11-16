@@ -348,6 +348,147 @@ const attemptPayout = async (txId) => {
   }
 };
 
+// Admin button: tries ONE Paystack transfer for ONE sale, right now.
+// Works whether AUTO_PAYOUTS is on or off, and never schedules retries.
+// Returns { ok, paid, pending, httpStatus, error }.
+//  - If Paystack refuses the transfer, the sale is put back exactly as it was ("ready to pay").
+//  - If Paystack does not answer, the sale stays "processing" so the 15 minute check can find
+//    out what happened. "Paid manually" is blocked while it is processing, so nobody is paid twice.
+const payoutNow = async (txId) => {
+  const before = await Transaction.findOneAndUpdate(
+    {
+      _id: txId,
+      paymentStatus: 'held',
+      payoutStatus: { $in: ['none', 'queued', 'failed'] }
+    },
+    { $set: { payoutStatus: 'processing', payoutStartedAt: new Date() }, $inc: { payoutAttempts: 1 } }
+  );
+
+  if (!before) {
+    return {
+      ok: false,
+      httpStatus: 409,
+      error: 'This payment cannot be paid by Paystack now. It may already be paid out, being paid out, or refunded.'
+    };
+  }
+
+  const attempt = (before.payoutAttempts || 0) + 1;
+
+  // Puts the sale back exactly as it was
+  const revert = () =>
+    Transaction.updateOne(
+      { _id: before._id },
+      {
+        $set: {
+          payoutStatus: before.payoutStatus,
+          payoutStartedAt: before.payoutStartedAt || null,
+          payoutReference: before.payoutReference || '',
+          payoutNextAttemptAt: before.payoutNextAttemptAt || null
+        },
+        $inc: { payoutAttempts: -1 }
+      }
+    );
+
+  try {
+    // An earlier attempt may have gone through. Check before sending anything.
+    if (before.payoutReference) {
+      let previous;
+      try {
+        previous = await paystack.verifyTransfer(before.payoutReference);
+      } catch (err) {
+        await revert();
+        return {
+          ok: false,
+          httpStatus: 503,
+          error: 'Could not check the earlier payout attempt with Paystack. Try again in a moment.'
+        };
+      }
+
+      if (previous) {
+        if (previous.status === 'success') {
+          await markPaid(before._id);
+          return { ok: true, paid: true };
+        }
+        if (!['failed', 'reversed'].includes(previous.status)) {
+          // Still being processed. Leave it processing; Paystack will tell us the result.
+          return { ok: true, pending: true };
+        }
+      }
+    }
+
+    const seller = await User.findById(before.sellerId).select('+paystackRecipientCode');
+    if (!seller || !seller.paystackRecipientCode) {
+      await revert();
+      return { ok: false, httpStatus: 409, error: 'The seller has no payout account saved.' };
+    }
+
+    const reference = `PO-${before._id}-${attempt}`;
+    await Transaction.updateOne({ _id: before._id }, { $set: { payoutReference: reference } });
+
+    let result;
+    try {
+      result = await paystack.initiateTransfer({
+        amountKobo: Math.round(before.sellerPayout * 100),
+        recipient: seller.paystackRecipientCode,
+        reference,
+        reason: `TradeSpace payout ${before._id}`
+      });
+    } catch (err) {
+      const status = err.response ? err.response.status : null;
+
+      if (status && status >= 400 && status < 500) {
+        // Paystack answered and said no. Nothing was sent.
+        await revert();
+        const detail =
+          err.response.data && err.response.data.message ? err.response.data.message : err.message;
+        console.error('Paystack refused the transfer:', detail);
+        return {
+          ok: false,
+          httpStatus: 400,
+          error: `Paystack refused the transfer: ${detail}. You can pay the seller from your bank and use "Paid manually".`
+        };
+      }
+
+      // No answer, or Paystack had an error. The transfer may or may not have been sent.
+      console.error('Paystack transfer outcome unknown:', err.message);
+      return {
+        ok: false,
+        httpStatus: 503,
+        error:
+          'Could not confirm with Paystack whether the transfer was sent. Do NOT pay this seller by hand yet. The sale will be checked again in about 15 minutes.'
+      };
+    }
+
+    if (result && result.transfer_code) {
+      await Transaction.updateOne({ _id: before._id }, { $set: { payoutTransferCode: result.transfer_code } });
+    }
+
+    if (result && result.status === 'success') {
+      await markPaid(before._id);
+      return { ok: true, paid: true };
+    }
+
+    if (result && result.status === 'otp') {
+      return {
+        ok: false,
+        httpStatus: 409,
+        error:
+          'Paystack is asking for an OTP. Turn off "Confirm transfers before sending" in Paystack Settings, then Preferences. Do NOT pay this seller by hand until the sale is checked again.'
+      };
+    }
+
+    // pending or queued: the webhook or the 15 minute check will confirm the final result
+    return { ok: true, pending: true };
+  } catch (err) {
+    console.error('payoutNow error:', err.message);
+    return {
+      ok: false,
+      httpStatus: 500,
+      error: 'Something went wrong. Check the sale status in the admin list before doing anything else.'
+    };
+  }
+};
+
 // Paystack told us how a payout ended
 const handleTransferResult = async (reference, outcome, message) => {
   const tx = await Transaction.findOne({ payoutReference: reference });
@@ -643,6 +784,7 @@ module.exports = {
   settleTransaction,
   queuePayout,
   attemptPayout,
+  payoutNow,
   handleTransferResult,
   startPaymentJobs
 };
