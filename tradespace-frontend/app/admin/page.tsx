@@ -558,38 +558,27 @@ export default function AdminPage() {
     if (!resolve) return;
     setResolving(true);
     try {
-      await API.post(`/admin/transactions/${resolve.tx._id}/${resolve.action}`, { note: resolveNote });
-      toast.success(resolve.action === 'refund' ? 'The buyer is being refunded' : 'The seller payout has started');
+      const response = await API.post(`/admin/transactions/${resolve.tx._id}/${resolve.action}`, {
+        note: resolveNote,
+      });
+
+      if (resolve.action === 'refund') {
+        toast.success('The buyer is being refunded');
+      } else if (response.data.payoutStatus === 'paid' || response.data.paymentStatus === 'released') {
+        toast.success('Paystack paid the seller');
+      } else {
+        toast.info('Paystack accepted the transfer. The sale will update shortly.');
+      }
+
       setResolve(null);
       setResolveNote('');
       await Promise.all([loadTransactions(), loadStats(), loadOverview()]);
     } catch (err: any) {
+      // The window stays open so you can read the message, then cancel or try again
       toast.error(getErrorMessage(err));
       await loadTransactions();
     } finally {
       setResolving(false);
-    }
-  };
-
-  const retryPayout = async (tx: AdminTransaction) => {
-    const ok = await confirmDialog({
-      title: 'Retry this payout?',
-      message: `Send ${naira(tx.sellerPayout)} to the seller for "${itemTitle(tx)}" again.`,
-      confirmText: 'Retry payout',
-    });
-    if (!ok) return;
-    try {
-      const response = await API.post(`/admin/transactions/${tx._id}/release`, { note: '' });
-      if (response.data.payoutStatus === 'paid' || response.data.paymentStatus === 'released') {
-        toast.success('The seller has been paid');
-      } else if (response.data.payoutError) {
-        toast.error(`Payout not sent yet: ${response.data.payoutError}`);
-      } else {
-        toast.info('The payout was started and will update shortly');
-      }
-      await Promise.all([loadTransactions(), loadStats(), loadOverview()]);
-    } catch (err: any) {
-      toast.error(getErrorMessage(err));
     }
   };
 
@@ -1078,8 +1067,9 @@ export default function AdminPage() {
           <>
             {!autoPayouts && (
               <div className="bg-amber-500/10 border border-amber-500/30 text-amber-200 rounded-xl px-4 py-3 mb-4 text-sm">
-                Seller payouts are manual. When a row says &quot;ready to pay&quot;, send the seller their share from
-                your bank, then press Paid manually.
+                Seller payouts are not automatic. For a row that is ready to pay, try Pay via Paystack first. If
+                Paystack refuses, nothing changes: send the seller their share from your bank, then press Paid
+                manually.
               </div>
             )}
 
@@ -1148,7 +1138,7 @@ export default function AdminPage() {
                           >
                             {payoutLabel(t, autoPayouts)}
                           </Pill>
-                          {t.payoutError && autoPayouts && <div className={SMALL}>{t.payoutError}</div>}
+                          {t.payoutError && <div className={SMALL}>{t.payoutError}</div>}
                         </td>
                         <td className={TD}>
                           <Pill tone={disputeTone(t.disputeStatus)}>{t.disputeStatus}</Pill>
@@ -1172,16 +1162,9 @@ export default function AdminPage() {
                               <Btn tone="red" onClick={() => openResolve(t, 'refund')}>
                                 Refund buyer
                               </Btn>
-                              {autoPayouts && t.payoutStatus === 'none' && (
-                                <Btn tone="green" onClick={() => openResolve(t, 'release')}>
-                                  Pay via Paystack
-                                </Btn>
-                              )}
-                              {autoPayouts && t.payoutStatus === 'failed' && (
-                                <Btn tone="blue" onClick={() => retryPayout(t)}>
-                                  Retry payout
-                                </Btn>
-                              )}
+                              <Btn tone="green" onClick={() => openResolve(t, 'release')}>
+                                Pay via Paystack
+                              </Btn>
                               <Btn tone="amber" onClick={() => openManual(t)}>
                                 Paid manually
                               </Btn>
@@ -1213,15 +1196,30 @@ export default function AdminPage() {
             onClick={(e) => e.stopPropagation()}
           >
             <h2 className="text-xl font-bold text-white mb-2">
-              {resolve.action === 'refund' ? 'Refund the buyer?' : 'Pay the seller?'}
+              {resolve.action === 'refund' ? 'Refund the buyer?' : 'Pay the seller through Paystack?'}
             </h2>
             <p className="text-sm text-gray-300">
               {resolve.action === 'refund'
                 ? `${naira(resolve.tx.amount)} goes back to ${resolve.tx.buyerId?.fullName || 'the buyer'}, and "${itemTitle(
                     resolve.tx
                   )}" returns to the seller as expired.`
-                : `${naira(resolve.tx.sellerPayout)} is sent to ${resolve.tx.sellerId?.fullName || 'the seller'}.`}
+                : `${naira(resolve.tx.sellerPayout)} is sent to ${resolve.tx.sellerId?.fullName || 'the seller'} by Paystack transfer.`}
             </p>
+            {resolve.action === 'release' && (
+              <p className="text-sm text-gray-400 mt-2">
+                If Paystack refuses the transfer, nothing changes and the sale stays ready to pay. You can then send
+                the money from your bank and use Paid manually.
+              </p>
+            )}
+            {resolve.action === 'release' && resolve.tx.disputeStatus !== 'filed' && resolve.tx.payoutStatus === 'none' && (
+              <p className="text-sm text-amber-300 mt-2">
+                The buyer has not confirmed yet
+                {resolve.tx.autoReleaseAt
+                  ? ` and can still report a problem until ${formatDate(resolve.tx.autoReleaseAt)}`
+                  : ''}
+                . Only pay now if you are sure.
+              </p>
+            )}
             {resolve.tx.disputeOpenedAt && (
               <p className="text-sm text-gray-400 mt-2">Buyer reported: {resolve.tx.disputeReason}</p>
             )}
@@ -1259,7 +1257,7 @@ export default function AdminPage() {
                   resolve.action === 'refund' ? 'bg-red-600 hover:bg-red-500' : 'bg-emerald-600 hover:bg-emerald-500'
                 }`}
               >
-                {resolving ? 'Working...' : resolve.action === 'refund' ? 'Refund buyer' : 'Pay seller'}
+                {resolving ? 'Working...' : resolve.action === 'refund' ? 'Refund buyer' : 'Pay via Paystack'}
               </button>
             </div>
           </div>

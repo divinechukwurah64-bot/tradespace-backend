@@ -19,6 +19,7 @@ const BIDDER_FIELDS = 'fullName';
 
 const MAX_REOPENS = 3;
 const AUCTION_LENGTH_MS = 24 * 60 * 60 * 1000;
+const MIN_BID_INCREMENT = 100;
 
 // Input limits
 const MAX_AMOUNT = 1000000000;
@@ -273,7 +274,15 @@ router.delete('/:id/comments/:commentId', auth, async (req, res) => {
     const isAuthor = comment.userId.toString() === req.user.userId;
     const isSeller = !!auction && auction.sellerId.toString() === req.user.userId;
 
-    if (!isAuthor && !isSeller && req.user.role !== 'admin') {
+    // The admin role comes from the database via middleware/auth.js, not from the token.
+    // Load it fresh here because the auth middleware does not set req.user.role.
+    let isAdmin = false;
+    if (!isAuthor && !isSeller) {
+      const user = await User.findById(req.user.userId).select('role');
+      isAdmin = !!user && user.role === 'admin';
+    }
+
+    if (!isAuthor && !isSeller && !isAdmin) {
       return res.status(403).json({ error: 'You cannot delete this comment' });
     }
 
@@ -387,10 +396,10 @@ router.post('/', auth, async (req, res) => {
   }
 });
 
-// PLACE BID - Auth required
+// PLACE BID - Auth required.
 // The bid is saved with one atomic database update. The update only matches if the auction
-// is still active, still running, and the current price is still below the new amount.
-// Two bids at the same moment can no longer overwrite each other.
+// is still active, still running, and the new amount is at least MIN_BID_INCREMENT above
+// the current price. Two bids at the same moment cannot overwrite each other.
 router.post('/:id/bids', auth, async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
@@ -413,10 +422,10 @@ router.post('/:id/bids', auth, async (req, res) => {
       return res.status(400).json({ error: 'Invalid bid amount' });
     }
 
-    const minimumBid = auction.currentBid || auction.startingBid;
-    if (amount <= minimumBid) {
+    const minimumBid = (auction.currentBid || auction.startingBid) + MIN_BID_INCREMENT;
+    if (amount < minimumBid) {
       return res.status(400).json({
-        error: `Bid must be higher than ₦${minimumBid.toLocaleString()}`
+        error: `Bid must be at least ${money(minimumBid)}`
       });
     }
 
@@ -433,13 +442,20 @@ router.post('/:id/bids', auth, async (req, res) => {
 
     // Atomic step. Returns the auction as it was just before this bid, or null if
     // someone else got in first (or the auction closed in the meantime).
+    // The filter enforces the ₦100 minimum increment on the database side too,
+    // so two concurrent bids at the same amount cannot both succeed.
     const before = await Auction.findOneAndUpdate(
       {
         _id: auction._id,
         status: 'active',
         endsAt: { $gt: new Date() },
         sellerId: { $ne: req.user.userId },
-        $expr: { $lt: [{ $ifNull: ['$currentBid', '$startingBid'] }, amount] }
+        $expr: {
+          $lte: [
+            { $add: [{ $ifNull: ['$currentBid', '$startingBid'] }, MIN_BID_INCREMENT] },
+            amount
+          ]
+        }
       },
       {
         $set: { currentBid: amount },
@@ -459,9 +475,9 @@ router.post('/:id/bids', auth, async (req, res) => {
       if (!latest || latest.status !== 'active' || new Date() > new Date(latest.endsAt)) {
         return res.status(400).json({ error: 'Auction has ended' });
       }
-      const latestMinimum = latest.currentBid || latest.startingBid;
+      const latestMinimum = (latest.currentBid || latest.startingBid) + MIN_BID_INCREMENT;
       return res.status(409).json({
-        error: `Someone just bid higher. The bid must now be higher than ₦${latestMinimum.toLocaleString()}`
+        error: `Someone just bid higher. The minimum bid is now ${money(latestMinimum)}`
       });
     }
 
@@ -495,6 +511,9 @@ router.post('/:id/bids', auth, async (req, res) => {
 });
 
 // ACCEPT A BID - Only the seller. The bidder then has 3 days to pay.
+// defaultedBidderIds is only used to skip bidders automatically when re-offering
+// the auction after a missed payment. On a reopened auction that list is cleared,
+// so a seller can accept any bidder they choose without restriction.
 router.post('/:id/bids/:bidId/accept', auth, async (req, res) => {
   try {
     const { id, bidId } = req.params;
@@ -526,10 +545,6 @@ router.post('/:id/bids/:bidId/accept', auth, async (req, res) => {
     const bid = auction.bids.id(bidId);
     if (!bid || !bid.bidderId) {
       return res.status(404).json({ error: 'Bid not found' });
-    }
-
-    if ((auction.defaultedBidderIds || []).some((d) => d.toString() === bid.bidderId.toString())) {
-      return res.status(400).json({ error: 'This bidder missed the payment deadline earlier' });
     }
 
     // We need to know where to send the money before a buyer is asked to pay
@@ -576,7 +591,9 @@ router.post('/:id/bids/:bidId/accept', auth, async (req, res) => {
   }
 });
 
-// REOPEN AN EXPIRED AUCTION - Only the seller, up to 3 times
+// REOPEN AN EXPIRED AUCTION - Only the seller, up to 3 times.
+// defaultedBidderIds is cleared on reopen so previous defaults do not carry over
+// into a fresh round. The seller can accept any bidder they choose.
 router.post('/:id/reopen', auth, async (req, res) => {
   try {
     const { id } = req.params;
@@ -597,7 +614,6 @@ router.post('/:id/reopen', auth, async (req, res) => {
       return res.status(400).json({ error: 'A sold auction cannot be reopened' });
     }
 
-    // Only auctions that ran out of time. Auctions closed by an admin stay closed.
     if (auction.status !== 'active') {
       return res.status(400).json({ error: 'This auction cannot be reopened' });
     }
@@ -614,6 +630,8 @@ router.post('/:id/reopen', auth, async (req, res) => {
     auction.reopenCount = (auction.reopenCount || 0) + 1;
     auction.isLive = false;
     auction.liveStartedAt = null;
+    // Clear previous defaults so the seller can accept any bidder in the new round
+    auction.defaultedBidderIds = [];
 
     await auction.save();
 
