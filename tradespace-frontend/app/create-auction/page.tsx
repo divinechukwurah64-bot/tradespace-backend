@@ -3,11 +3,12 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Plus, X } from 'lucide-react';
 import API from '@/lib/api';
 import { AUCTION_PHOTO, prepareAndUploadImage } from '@/lib/image';
 
-const MIN_STARTING_PRICE = 100;
+const MIN_STARTING_PRICE = 500;
+const MAX_IMAGES = 5;
 
 export default function CreateAuction() {
   const router = useRouter();
@@ -18,11 +19,11 @@ export default function CreateAuction() {
     startingPrice: '',
     category: 'Other',
     condition: 'New',
-    image: '',
   });
+  const [images, setImages] = useState<string[]>([]);
+  const [uploadingSlot, setUploadingSlot] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [uploadingImage, setUploadingImage] = useState(false);
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -33,41 +34,51 @@ export default function CreateAuction() {
     setCheckingAuth(false);
   }, []);
 
-  const handleImageUpload = async (e) => {
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>, slot: number) => {
     const file = e.target.files?.[0];
-    // Lets the same file be chosen again after a failed attempt
     e.target.value = '';
     if (!file) return;
 
     setError('');
-    setUploadingImage(true);
+    setUploadingSlot(slot);
     try {
       const url = await prepareAndUploadImage(file, AUCTION_PHOTO);
-      setFormData((prev) => ({ ...prev, image: url }));
+      setImages((prev) => {
+        const next = [...prev];
+        if (slot < next.length) {
+          next[slot] = url;
+        } else {
+          next.push(url);
+        }
+        return next;
+      });
     } catch (err: any) {
       setError(err.message || 'Could not upload the photo. Please try again.');
     } finally {
-      setUploadingImage(false);
+      setUploadingSlot(null);
     }
   };
 
-  const handleSubmit = async (e) => {
+  const removeImage = (index: number) => {
+    setImages((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
 
-    if (!formData.image) {
-      setError('Please add a product photo');
+    if (images.length === 0) {
+      setError('Add at least one photo');
       return;
     }
 
     const price = Number(formData.startingPrice);
     if (!Number.isInteger(price) || price < MIN_STARTING_PRICE) {
-      setError('Starting price must be a whole number of at least ₦100');
+      setError(`Starting price must be a whole number of at least ₦${MIN_STARTING_PRICE.toLocaleString()}`);
       return;
     }
 
     setLoading(true);
-
     try {
       await API.post('/auctions', {
         title: formData.title,
@@ -75,7 +86,7 @@ export default function CreateAuction() {
         category: formData.category || 'Other',
         condition: formData.condition || 'New',
         startingBid: price,
-        images: [formData.image],
+        images,
       });
       router.push('/auctions');
     } catch (err: any) {
@@ -91,9 +102,9 @@ export default function CreateAuction() {
     }
   };
 
-  if (checkingAuth) {
-    return null;
-  }
+  if (checkingAuth) return null;
+
+  const slots = Array.from({ length: MAX_IMAGES });
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -116,40 +127,88 @@ export default function CreateAuction() {
           )}
 
           <div className="mb-6">
-            <label className="block text-sm font-bold text-gray-700 mb-2">Product Image</label>
-            <div className="border-2 border-dashed border-gray-300 rounded-lg p-6">
-              {formData.image ? (
-                <div className="text-center">
-                  <img src={formData.image} alt="Preview" className="w-32 h-32 object-cover mx-auto rounded mb-4" />
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={handleImageUpload}
-                    disabled={uploadingImage}
-                    className="hidden"
-                    id="image-input"
-                  />
-                  <label htmlFor="image-input" className="text-blue-600 hover:underline cursor-pointer">
-                    {uploadingImage ? 'Uploading...' : 'Change Image'}
-                  </label>
-                </div>
-              ) : (
-                <div className="text-center">
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={handleImageUpload}
-                    disabled={uploadingImage}
-                    className="hidden"
-                    id="image-input"
-                  />
-                  <label htmlFor="image-input" className="cursor-pointer block">
-                    <p className="text-gray-600 mb-2">
-                      {uploadingImage ? 'Uploading...' : 'Click to upload product image'}
-                    </p>
-                  </label>
-                </div>
-              )}
+            <label className="block text-sm font-bold text-gray-700 mb-1">
+              Photos <span className="font-normal text-gray-500">({images.length} of {MAX_IMAGES})</span>
+            </label>
+            <p className="text-xs text-gray-500 mb-3">
+              First photo is the main one. Tap an uploaded photo to replace it.
+            </p>
+            <div className="grid grid-cols-5 gap-2">
+              {slots.map((_, idx) => {
+                const filled = images[idx];
+                const isUploading = uploadingSlot === idx;
+                const isLocked = idx > images.length;
+
+                return (
+                  <div key={idx} className="relative aspect-square">
+                    {filled ? (
+                      <>
+                        <label
+                          htmlFor={`img-${idx}`}
+                          className="block w-full h-full cursor-pointer rounded-lg overflow-hidden border-2 border-blue-400"
+                        >
+                          <img
+                            src={filled}
+                            alt={`Photo ${idx + 1}`}
+                            className="w-full h-full object-cover"
+                          />
+                          <input
+                            type="file"
+                            id={`img-${idx}`}
+                            accept="image/*"
+                            onChange={(e) => handleImageUpload(e, idx)}
+                            className="hidden"
+                            disabled={uploadingSlot !== null}
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => removeImage(idx)}
+                          className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-600 text-white rounded-full flex items-center justify-center hover:bg-red-700"
+                          aria-label="Remove photo"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                        {idx === 0 && (
+                          <span className="absolute bottom-0 left-0 right-0 text-center text-[10px] font-bold bg-blue-600 text-white py-0.5 rounded-b-lg">
+                            Main
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      <label
+                        htmlFor={`img-${idx}`}
+                        className={`flex flex-col items-center justify-center w-full h-full rounded-lg border-2 border-dashed transition ${
+                          isLocked
+                            ? 'border-gray-200 bg-gray-50 cursor-not-allowed'
+                            : 'border-gray-300 bg-white hover:border-blue-400 cursor-pointer'
+                        }`}
+                      >
+                        {isUploading ? (
+                          <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                        ) : (
+                          <>
+                            <Plus className={`w-5 h-5 ${isLocked ? 'text-gray-300' : 'text-gray-400'}`} />
+                            {idx === 0 && (
+                              <span className="text-[10px] text-gray-400 mt-1 text-center leading-tight">
+                                Add photo
+                              </span>
+                            )}
+                          </>
+                        )}
+                        <input
+                          type="file"
+                          id={`img-${idx}`}
+                          accept="image/*"
+                          onChange={(e) => handleImageUpload(e, idx)}
+                          className="hidden"
+                          disabled={isLocked || uploadingSlot !== null}
+                        />
+                      </label>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
 
@@ -162,7 +221,7 @@ export default function CreateAuction() {
               placeholder="What are you selling?"
               maxLength={150}
               required
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
             />
           </div>
 
@@ -175,7 +234,7 @@ export default function CreateAuction() {
               rows={5}
               maxLength={5000}
               required
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
             />
           </div>
 
@@ -185,7 +244,7 @@ export default function CreateAuction() {
               <select
                 value={formData.category}
                 onChange={(e) => setFormData({ ...formData, category: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black bg-white"
               >
                 <option value="Electronics">Electronics</option>
                 <option value="Fashion">Fashion</option>
@@ -201,7 +260,7 @@ export default function CreateAuction() {
               <select
                 value={formData.condition}
                 onChange={(e) => setFormData({ ...formData, condition: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black bg-white"
               >
                 <option value="New">New</option>
                 <option value="Like New">Like New</option>
@@ -217,17 +276,17 @@ export default function CreateAuction() {
               type="number"
               value={formData.startingPrice}
               onChange={(e) => setFormData({ ...formData, startingPrice: e.target.value })}
-              placeholder="e.g. 5000"
+              placeholder={`Minimum ₦${MIN_STARTING_PRICE.toLocaleString()}`}
               min={MIN_STARTING_PRICE}
               step={1}
               required
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black"
             />
           </div>
 
           <button
             type="submit"
-            disabled={loading || uploadingImage}
+            disabled={loading || uploadingSlot !== null}
             className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700 disabled:bg-gray-400 transition"
           >
             {loading ? 'Creating Auction...' : 'Create Auction'}

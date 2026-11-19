@@ -55,6 +55,15 @@ if (!process.env.SUPPORT_EMAIL) {
 if (!process.env.LIVEKIT_URL || !process.env.LIVEKIT_API_KEY || !process.env.LIVEKIT_API_SECRET) {
   settingWarnings.push('LiveKit settings are incomplete, so live streams will not work.');
 }
+if (
+  !process.env.R2_ACCOUNT_ID ||
+  !process.env.R2_ACCESS_KEY_ID ||
+  !process.env.R2_SECRET_ACCESS_KEY ||
+  !process.env.R2_BUCKET ||
+  !process.env.R2_PUBLIC_URL
+) {
+  settingWarnings.push('Cloudflare R2 settings are incomplete, so photo uploads will not work.');
+}
 if (isProduction && /localhost|127\.0\.0\.1/i.test(process.env.FRONTEND_URL)) {
   settingWarnings.push('FRONTEND_URL includes localhost while running in production.');
 }
@@ -294,6 +303,7 @@ app.use('/api/users', require('./routes/users'));
 app.use('/api/payments', require('./routes/payments'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/support', require('./routes/support'));
+app.use('/api/uploads', require('./routes/uploads'));
 
 // Identify the user on connect. Visitors without a valid token still connect,
 // but as anonymous: they can watch auctions and never join a user room.

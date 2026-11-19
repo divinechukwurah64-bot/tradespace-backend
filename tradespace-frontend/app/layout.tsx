@@ -1,9 +1,9 @@
-import LoadingScreen from './components/LoadingScreen';
+import LoadingScreen from "./components/LoadingScreen";
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import Navbar from "./components/Navbar";
 
-import Navbar from './components/Navbar';
 const geistSans = Geist({
   variable: "--font-geist-sans",
   subsets: ["latin"],
@@ -15,12 +15,16 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://www.tradespace.online"),
   title: {
-    default: "TradeSpace",
-    template: "%s | TradeSpace",
+    default: "TradeSpace Nigeria | Auctions and Gigs",
+    template: "%s | TradeSpace Nigeria",
   },
   description:
-    "TradeSpace is a Nigerian marketplace for live auctions and service listings. Bid on items, sell yours, and pay safely with payments held until delivery.",
+    "TradeSpace is a Nigerian marketplace for live auctions and service listings. Bid on items, sell yours, and discover services.",
+  alternates: {
+    canonical: "/",
+  },
 };
 
 export default function RootLayout({
@@ -37,9 +41,6 @@ export default function RootLayout({
         <LoadingScreen />
         <Navbar />
         {children}
-        <footer className="mt-auto w-full border-t border-gray-200 px-4 py-6 text-center text-sm text-gray-600 dark:border-gray-800 dark:text-gray-400">
-          @dallas empire inc
-        </footer>
       </body>
     </html>
   );

@@ -33,7 +33,7 @@ function AuctionImage({ src, alt }: { src: string | null; alt: string }) {
       loading="lazy"
       decoding="async"
       onError={() => setFailed(true)}
-      className="w-full h-full object-cover md:hover:scale-105 transition"
+      className="w-full h-full object-cover md:object-contain"
     />
   );
 }
@@ -327,7 +327,7 @@ export default function Auctions() {
                 <Link key={auction._id} href={`/auctions/${auction._id}`} className="block">
                   <div className="flex md:block bg-white rounded-lg shadow hover:shadow-lg transition overflow-hidden cursor-pointer">
                     {/* Image: square on the left on phones, wide on top from tablet size up */}
-                    <div className="relative overflow-hidden bg-gray-200 flex-shrink-0 w-32 h-32 sm:w-40 sm:h-40 md:w-full md:h-48">
+                    <div className="relative overflow-hidden bg-gray-200 flex-shrink-0 w-32 h-32 sm:w-40 sm:h-40 md:w-full md:h-56">
                       <AuctionImage src={image} alt={auction.title} />
                       {timeLeft > 0 && (
                         <div className="absolute top-1.5 left-1.5 md:left-auto md:top-2 md:right-2 bg-red-600 text-white px-2 py-0.5 md:px-3 md:py-1 rounded-full text-[11px] md:text-sm font-bold flex items-center gap-1">

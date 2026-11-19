@@ -9,6 +9,7 @@ import { confirmDialog, toast } from '@/lib/dialogs';
 import ReportButton from '../../components/ReportButton';
 
 const MAX_REOPENS = 3;
+const MIN_BID_INCREMENT = 100;
 
 const DISPUTE_REASONS = [
   'Item not received',
@@ -32,7 +33,6 @@ const formatLeft = (ms: number) => {
   return days > 0 ? `${days}d ${hours}h ${minutes}m` : `${hours}h ${minutes}m`;
 };
 
-// Shows the photo, or a grey box if there is none or it fails to load
 function Photo({
   src,
   alt,
@@ -211,18 +211,25 @@ export default function AuctionDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sellerIdForStats]);
 
-  // Once the sale is paid, the buyer and the seller see where the money is
-  const paymentRole = auction?.status === 'sold' ? auction?.viewer?.role : null;
+  // Load payment status for both the sold and awaiting_payment states.
+  // Clear stale payment state when the auction is no longer in either of those states
+  // so old payment data from a previous round is never shown after a reopen and re-accept.
+  const auctionStatus = auction?.status;
+  const viewerRole = auction?.viewer?.role;
   useEffect(() => {
-    if (!paymentRole) {
+    const needsPaymentStatus =
+      (auctionStatus === 'sold' || auctionStatus === 'awaiting_payment') && !!viewerRole;
+
+    if (!needsPaymentStatus) {
       setPayment(null);
       return;
     }
+
     fetchPayment();
     const interval = setInterval(fetchPayment, 5000);
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paymentRole, auctionId]);
+  }, [auctionStatus, viewerRole, auctionId]);
 
   useEffect(() => {
     if (!auction?.endsAt) return;
@@ -544,7 +551,6 @@ export default function AuctionDetail() {
   const images: string[] = auction.images && auction.images.length > 0 ? auction.images : [];
   const mainImage = images[imageIndex] || images[0] || null;
 
-  // The other person in this sale, for the Message button in the contact box
   const otherPartyId: string | null =
     viewer.role === 'seller'
       ? auction.winnerId?._id || null
@@ -561,7 +567,8 @@ export default function AuctionDetail() {
     : 0;
   const windowOpen = windowLeftMs > 0;
 
-  // The seller's "report a problem" button and form
+  const minimumNextBid = (auction.currentBid || auction.startingBid) + MIN_BID_INCREMENT;
+
   const complaintSection = (buttonLabel: string) =>
     !complaintOpen ? (
       <button
@@ -651,7 +658,7 @@ export default function AuctionDetail() {
               <Photo
                 src={mainImage}
                 alt={auction.title}
-                className="w-full h-64 md:h-80 object-cover"
+                className="w-full h-64 md:h-[28rem] object-cover md:object-contain bg-gray-100"
                 eager
               />
 
@@ -1134,9 +1141,9 @@ export default function AuctionDetail() {
                   type="number"
                   value={bidAmount}
                   onChange={(e) => setBidAmount(e.target.value)}
-                  placeholder={`Minimum: ₦${((auction.currentBid || auction.startingBid) + 1)?.toLocaleString()}`}
-                  min={(auction.currentBid || auction.startingBid) + 1}
-                  step={1}
+                  placeholder={`Minimum: ₦${minimumNextBid.toLocaleString()}`}
+                  min={minimumNextBid}
+                  step={MIN_BID_INCREMENT}
                   required
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500 text-black bg-white"
                 />
