@@ -69,6 +69,17 @@ const resetLimiter = makeLimiter(
   'Too many attempts. Please wait 15 minutes and try again.'
 );
 
+// Per logged in user, and only failed attempts count
+const changePasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  keyGenerator: (req) => String(req.user.userId),
+  message: { error: 'Too many attempts. Please wait 15 minutes and try again.' }
+});
+
 // Failed emails are saved to the errorlogs collection so you can see them
 const logEmailFailure = async (err, req) => {
   const reference = crypto.randomBytes(3).toString('hex').toUpperCase();
@@ -266,6 +277,50 @@ router.post('/reset-password', resetLimiter, async (req, res) => {
     res.json({ message: 'Your password has been reset. You can now sign in.' });
   } catch (err) {
     console.error('POST /auth/reset-password error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// CHANGE PASSWORD - for a logged in person who knows their current password.
+// Saving sets passwordChangedAt, which logs every other device out. This device gets a fresh token
+// so the person stays logged in here.
+router.post('/change-password', authMiddleware, changePasswordLimiter, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (typeof currentPassword !== 'string' || !currentPassword || typeof newPassword !== 'string') {
+      return res.status(400).json({ error: 'Enter your current password and a new one' });
+    }
+    if (newPassword.length < MIN_PASSWORD_LENGTH) {
+      return res.status(400).json({ error: 'New password must be at least 8 characters' });
+    }
+    if (newPassword.length > MAX_PASSWORD_LENGTH) {
+      return res.status(400).json({ error: 'New password is too long' });
+    }
+    if (newPassword === currentPassword) {
+      return res.status(400).json({ error: 'Your new password must be different from the current one' });
+    }
+
+    const user = await User.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (!(await user.comparePassword(currentPassword))) {
+      return res.status(403).json({ error: 'Your current password is incorrect' });
+    }
+
+    user.password = newPassword;
+    // Any reset link sent earlier stops working
+    user.passwordResetTokenHash = null;
+    user.passwordResetExpires = null;
+    await user.save();
+
+    const token = jwt.sign({ userId: user._id, email: user.email }, process.env.JWT_SECRET, { expiresIn: '7d' });
+
+    res.json({ message: 'Password changed', token });
+  } catch (err) {
+    console.error('POST /auth/change-password error:', err);
     res.status(500).json({ error: err.message });
   }
 });

@@ -32,6 +32,8 @@ const userSchema = new mongoose.Schema({
     select: false
   },
   acceptedTermsAt: { type: Date, default: null },
+  // Set when the person deletes their account. The record stays, anonymised, so old bids, reviews and sales still work.
+  deletedAt: { type: Date, default: null },
   passwordChangedAt: { type: Date, default: null },
   passwordResetTokenHash: { type: String, default: null, select: false },
   passwordResetExpires: { type: Date, default: null, select: false },

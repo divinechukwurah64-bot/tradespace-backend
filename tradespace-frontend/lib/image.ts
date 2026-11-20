@@ -1,4 +1,7 @@
-// Shared image helpers: shrink a photo in the browser, then upload it to ImgBB.
+// Shared image helpers: shrink a photo in the browser, then upload it to Cloudflare R2.
+// The backend signs a one-time upload link, and the browser sends the photo straight to R2.
+
+import API from './api';
 
 export const MAX_ORIGINAL_BYTES = 15 * 1024 * 1024;
 const UPLOAD_TIMEOUT_MS = 45000;
@@ -7,6 +10,8 @@ export type CompressOptions = {
   maxSide: number;
   quality: number;
 };
+
+export type UploadKind = 'auction' | 'gig' | 'profile';
 
 // Auction photos stay large. Profile pictures only show as small avatars, so they can be much smaller.
 export const AUCTION_PHOTO: CompressOptions = { maxSide: 1280, quality: 0.8 };
@@ -55,38 +60,42 @@ export const compressImage = (file: File, options: CompressOptions = AUCTION_PHO
     img.src = objectUrl;
   });
 
-const uploadToImgbb = async (blob: Blob): Promise<string> => {
-  const body = new FormData();
-  body.append('image', blob, 'photo.jpg');
-  body.append('key', process.env.NEXT_PUBLIC_IMGBB_API_KEY || '');
+const uploadToR2 = async (blob: Blob, kind: UploadKind): Promise<string> => {
+  // Ask the backend for a one-time upload link and the final public address
+  const signed = await API.post('/uploads/sign', { kind, contentType: 'image/jpeg' });
+  const { uploadUrl, publicUrl } = signed.data;
+
+  if (!uploadUrl || !publicUrl) {
+    throw new Error('Upload failed');
+  }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
 
   try {
-    const response = await fetch('https://api.imgbb.com/1/upload', {
-      method: 'POST',
-      body,
+    const response = await fetch(uploadUrl, {
+      method: 'PUT',
+      body: blob,
+      headers: { 'Content-Type': 'image/jpeg' },
       signal: controller.signal,
     });
-    const data = await response.json();
 
-    if (!data.success || !data.data || !data.data.url) {
-      throw new Error('Upload failed');
+    if (!response.ok) {
+      throw new Error(`Upload failed with status ${response.status}`);
     }
 
-    return String(data.data.url).replace(/^http:\/\//i, 'https://');
+    return String(publicUrl);
   } finally {
     clearTimeout(timer);
   }
 };
 
 // One automatic retry, because mobile connections drop often
-export const uploadWithRetry = async (blob: Blob): Promise<string> => {
+export const uploadWithRetry = async (blob: Blob, kind: UploadKind = 'auction'): Promise<string> => {
   try {
-    return await uploadToImgbb(blob);
+    return await uploadToR2(blob, kind);
   } catch (firstErr) {
-    return await uploadToImgbb(blob);
+    return await uploadToR2(blob, kind);
   }
 };
 
@@ -94,7 +103,8 @@ export const uploadWithRetry = async (blob: Blob): Promise<string> => {
 // Throws an Error whose message is safe to show to the person.
 export const prepareAndUploadImage = async (
   file: File,
-  options: CompressOptions = AUCTION_PHOTO
+  options: CompressOptions = AUCTION_PHOTO,
+  kind?: UploadKind
 ): Promise<string> => {
   if (!file.type.startsWith('image/')) {
     throw new Error('Please choose an image file');
@@ -103,9 +113,11 @@ export const prepareAndUploadImage = async (
     throw new Error('That photo is too large. Please choose one under 15 MB.');
   }
 
+  const uploadKind: UploadKind = kind || (options === PROFILE_PHOTO ? 'profile' : 'auction');
+
   try {
     const blob = await compressImage(file, options);
-    return await uploadWithRetry(blob);
+    return await uploadWithRetry(blob, uploadKind);
   } catch (err) {
     console.error('Upload error:', err);
     throw new Error('Could not upload the photo. Check your connection and try again, or use a JPG or PNG.');

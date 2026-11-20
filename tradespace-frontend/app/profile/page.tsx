@@ -8,6 +8,7 @@ import { confirmDialog, toast } from '@/lib/dialogs';
 import { PROFILE_PHOTO, prepareAndUploadImage } from '@/lib/image';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const MIN_PASSWORD_LENGTH = 8;
 
 const Stars = ({ value, size = 'w-4 h-4' }: { value: number; size?: string }) => (
   <div className="flex">
@@ -138,6 +139,15 @@ export default function MyProfile() {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
 
+  const [pw, setPw] = useState({ current: '', next: '', confirm: '' });
+  const [pwSaving, setPwSaving] = useState(false);
+
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deleteText, setDeleteText] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
+
   const load = async () => {
     try {
       const meRes = await API.get('/auth/me');
@@ -266,6 +276,64 @@ export default function MyProfile() {
       toast.success('Profile picture removed');
     } catch (err: any) {
       toast.error(err.response?.data?.error || 'Could not remove your picture');
+    }
+  };
+
+  const handleChangePassword = async (e: any) => {
+    e.preventDefault();
+
+    if (pw.next.length < MIN_PASSWORD_LENGTH) {
+      toast.error('Your new password must be at least 8 characters');
+      return;
+    }
+    if (pw.next !== pw.confirm) {
+      toast.error('The new passwords do not match');
+      return;
+    }
+    if (pw.next === pw.current) {
+      toast.error('Your new password must be different from the current one');
+      return;
+    }
+
+    setPwSaving(true);
+    try {
+      const response = await API.post('/auth/change-password', {
+        currentPassword: pw.current,
+        newPassword: pw.next,
+      });
+
+      // Other devices are logged out. This one gets a fresh token so you stay signed in.
+      if (response.data?.token) {
+        localStorage.setItem('token', response.data.token);
+      }
+
+      setPw({ current: '', next: '', confirm: '' });
+      toast.success('Password changed. Your other devices have been logged out.');
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Could not change your password');
+    } finally {
+      setPwSaving(false);
+    }
+  };
+
+  const handleDeleteAccount = async (e: any) => {
+    e.preventDefault();
+    setDeleteError('');
+
+    if (deleteText !== 'DELETE') {
+      setDeleteError('Type DELETE in capital letters to confirm');
+      return;
+    }
+
+    setDeleting(true);
+    try {
+      await API.post('/users/me/delete', { password: deletePassword });
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      window.location.href = '/';
+    } catch (err: any) {
+      setDeleteError(err.response?.data?.error || 'Could not delete your account');
+      setDeleting(false);
     }
   };
 
@@ -505,9 +573,11 @@ export default function MyProfile() {
 
         <h2 className="text-xl font-bold text-black mb-4">Reviews about you</h2>
         {!profile || profile.reviews.length === 0 ? (
-          <p className="text-gray-500">No reviews yet. Buyers can review you after winning one of your auctions.</p>
+          <p className="text-gray-500 mb-8">
+            No reviews yet. Buyers can review you after winning one of your auctions.
+          </p>
         ) : (
-          <div className="bg-white rounded-lg shadow divide-y divide-gray-100">
+          <div className="bg-white rounded-lg shadow divide-y divide-gray-100 mb-8">
             {profile.reviews.map((r: any) => (
               <div key={r._id} className="p-5">
                 <div className="flex items-center justify-between mb-1">
@@ -522,6 +592,128 @@ export default function MyProfile() {
             ))}
           </div>
         )}
+
+        <form onSubmit={handleChangePassword} className="bg-white rounded-lg shadow p-6 mb-8">
+          <h2 className="text-xl font-bold text-black mb-4">Change password</h2>
+
+          <label className="block text-sm font-medium text-gray-700 mb-2">Current password</label>
+          <input
+            type="password"
+            value={pw.current}
+            onChange={(e) => setPw({ ...pw, current: e.target.value })}
+            required
+            autoComplete="current-password"
+            className="w-full px-4 py-2 border border-gray-300 rounded-lg mb-4 focus:outline-none focus:border-blue-500 text-black bg-white"
+          />
+
+          <label className="block text-sm font-medium text-gray-700 mb-2">New password</label>
+          <input
+            type="password"
+            value={pw.next}
+            onChange={(e) => setPw({ ...pw, next: e.target.value })}
+            required
+            minLength={MIN_PASSWORD_LENGTH}
+            maxLength={128}
+            autoComplete="new-password"
+            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:border-blue-500 text-black bg-white"
+          />
+          <p className="text-xs text-gray-500 mt-1 mb-4">At least 8 characters.</p>
+
+          <label className="block text-sm font-medium text-gray-700 mb-2">Confirm new password</label>
+          <input
+            type="password"
+            value={pw.confirm}
+            onChange={(e) => setPw({ ...pw, confirm: e.target.value })}
+            required
+            autoComplete="new-password"
+            className="w-full px-4 py-2 border border-gray-300 rounded-lg mb-2 focus:outline-none focus:border-blue-500 text-black bg-white"
+          />
+          <p className="text-xs text-gray-500 mb-4">
+            Changing your password logs you out on every other device.
+          </p>
+
+          <button
+            type="submit"
+            disabled={pwSaving}
+            className="bg-blue-600 text-white px-8 py-2 rounded-lg font-bold hover:bg-blue-700 disabled:bg-gray-400"
+          >
+            {pwSaving ? 'Changing...' : 'Change password'}
+          </button>
+        </form>
+
+        <div className="bg-white rounded-lg shadow border border-red-200 p-6">
+          <h2 className="text-xl font-bold text-red-600 mb-2">Delete account</h2>
+          <p className="text-sm text-gray-700 mb-2">
+            This cannot be undone. Your name, email, phone, picture and bank details are removed and your gigs are
+            deleted. Past bids, reviews and sales stay, but show "Deleted user".
+          </p>
+          <p className="text-sm text-gray-700 mb-4">
+            You cannot delete your account while you have running auctions, bids on running auctions, an auction you
+            won but have not paid for, or a sale with money held or a problem under review.
+          </p>
+
+          {!deleteOpen ? (
+            <button
+              type="button"
+              onClick={() => setDeleteOpen(true)}
+              className="bg-white text-red-600 border border-red-300 px-6 py-2 rounded-lg font-bold hover:bg-red-50"
+            >
+              Delete my account
+            </button>
+          ) : (
+            <form onSubmit={handleDeleteAccount}>
+              {deleteError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded mb-4 text-sm">
+                  {deleteError}
+                </div>
+              )}
+
+              <label className="block text-sm font-medium text-gray-700 mb-2">Your password</label>
+              <input
+                type="password"
+                value={deletePassword}
+                onChange={(e) => setDeletePassword(e.target.value)}
+                required
+                autoComplete="current-password"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg mb-4 focus:outline-none focus:border-red-500 text-black bg-white"
+              />
+
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Type DELETE to confirm
+              </label>
+              <input
+                type="text"
+                value={deleteText}
+                onChange={(e) => setDeleteText(e.target.value)}
+                required
+                autoComplete="off"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg mb-4 focus:outline-none focus:border-red-500 text-black bg-white"
+              />
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDeleteOpen(false);
+                    setDeletePassword('');
+                    setDeleteText('');
+                    setDeleteError('');
+                  }}
+                  className="flex-1 border border-gray-300 text-gray-700 py-2 rounded-lg font-semibold hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={deleting || deleteText !== 'DELETE' || !deletePassword}
+                  className="flex-1 bg-red-600 text-white py-2 rounded-lg font-bold hover:bg-red-700 disabled:bg-gray-400"
+                >
+                  {deleting ? 'Deleting...' : 'Delete forever'}
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
       </div>
     </div>
   );

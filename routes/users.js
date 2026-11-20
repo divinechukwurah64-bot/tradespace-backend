@@ -1,4 +1,6 @@
 const express = require('express');
+const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
 const mongoose = require('mongoose');
 const User = require('../models/User');
 const Auction = require('../models/Auction');
@@ -12,9 +14,18 @@ const secretBox = require('../utils/secretBox');
 
 const router = express.Router();
 
-const IMAGE_URL = /^https:\/\/([a-z0-9-]+\.)?ibb\.co\/\S+$/i;
+// Old photos live on ImgBB. New ones live in our own storage, under profile/<user id>/.
+const OLD_IMAGE_URL = /^https:\/\/([a-z0-9-]+\.)?ibb\.co\/\S+$/i;
 const PHONE = /^[0-9+\-()\s]{6,20}$/;
 const ACCOUNT_NUMBER = /^\d{10}$/;
+
+const isAllowedProfileImage = (url, userId) => {
+  if (typeof url !== 'string' || url.length > 500 || /\s/.test(url)) return false;
+  if (OLD_IMAGE_URL.test(url)) return true;
+
+  const base = (process.env.R2_PUBLIC_URL || '').replace(/\/+$/, '');
+  return !!base && url.startsWith(`${base}/profile/${String(userId)}/`);
+};
 
 const ATTEMPT_WINDOW_MS = 10 * 60 * 1000;
 
@@ -109,11 +120,7 @@ router.put('/me', auth, async (req, res) => {
     if (profileImage !== undefined) {
       if (profileImage === null || profileImage === '') {
         user.profileImage = null;
-      } else if (
-        typeof profileImage === 'string' &&
-        profileImage.length <= 500 &&
-        IMAGE_URL.test(profileImage)
-      ) {
+      } else if (isAllowedProfileImage(profileImage, user._id)) {
         user.profileImage = profileImage;
       } else {
         return res.status(400).json({ error: 'Profile picture must be uploaded through TradeSpace' });
@@ -259,6 +266,108 @@ router.put('/me/bank', auth, async (req, res) => {
   }
 });
 
+// DELETE MY ACCOUNT - needs the password.
+// The account is anonymised, not erased, so old bids, reviews and sales keep working.
+// It is refused while money or an open deal is tied to the account.
+router.post('/me/delete', auth, async (req, res) => {
+  try {
+    const { password } = req.body;
+
+    if (typeof password !== 'string' || !password) {
+      return res.status(400).json({ error: 'Enter your password to delete your account' });
+    }
+
+    if (!allowAttempt(req.user.userId)) {
+      return res.status(429).json({ error: 'Too many attempts. Please wait a few minutes and try again.' });
+    }
+
+    const user = await User.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (user.role === 'admin') {
+      return res.status(403).json({ error: 'Admin accounts cannot be deleted from here' });
+    }
+
+    if (!(await user.comparePassword(password))) {
+      return res.status(403).json({ error: 'Incorrect password' });
+    }
+
+    const userId = user._id;
+    const now = new Date();
+    const openDeal = { $or: [{ paymentStatus: { $in: ['captured', 'held'] } }, { disputeStatus: 'filed' }] };
+
+    const [sellingNow, wonAuctions, liveBids, sellerDeals] = await Promise.all([
+      Auction.countDocuments({ sellerId: userId, status: { $in: ['active', 'awaiting_payment'] } }),
+      Auction.find({ winnerId: userId }).select('_id status'),
+      Auction.countDocuments({ status: 'active', endsAt: { $gt: now }, 'bids.bidderId': userId }),
+      Transaction.countDocuments({ sellerId: userId, ...openDeal })
+    ]);
+
+    const wonIds = wonAuctions.map((a) => a._id);
+    const unpaidWins = wonAuctions.filter((a) => a.status === 'awaiting_payment').length;
+    const buyerDeals = wonIds.length
+      ? await Transaction.countDocuments({ auctionId: { $in: wonIds }, ...openDeal })
+      : 0;
+
+    const reasons = [];
+    if (sellingNow > 0) reasons.push('you have auctions that are still running or waiting for payment');
+    if (liveBids > 0) reasons.push('you have bids on auctions that are still running');
+    if (unpaidWins > 0) reasons.push('you have won an auction you have not paid for yet');
+    if (sellerDeals > 0 || buyerDeals > 0) {
+      reasons.push('you have a sale with money held or a problem still being reviewed');
+    }
+
+    if (reasons.length > 0) {
+      return res.status(409).json({
+        error: `You cannot delete your account yet because ${reasons.join(', and ')}. Finish those first, then try again.`
+      });
+    }
+
+    const randomHash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10);
+
+    // Your gigs are removed. Nothing else is deleted.
+    await Gig.deleteMany({ sellerId: userId });
+
+    await User.updateOne(
+      { _id: userId },
+      {
+        $set: {
+          fullName: 'Deleted user',
+          email: `deleted-${userId}@deleted.invalid`,
+          password: randomHash,
+          phone: '',
+          bio: '',
+          profileImage: null,
+          bankName: null,
+          bankAccountName: null,
+          bankAccountNumber: null,
+          bankAccountLast4: null,
+          bankCode: null,
+          bankAccountEncrypted: null,
+          paystackRecipientCode: null,
+          blockedUsers: [],
+          isVerified: false,
+          passwordResetTokenHash: null,
+          passwordResetExpires: null,
+          deletedAt: now,
+          // Logs out every device that still has a token
+          passwordChangedAt: now,
+          updatedAt: now
+        }
+      }
+    );
+
+    console.log(`Account ${userId} was deleted by its owner`);
+
+    res.json({ message: 'Your account has been deleted' });
+  } catch (err) {
+    console.error('POST /users/me/delete error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ADMIN ONLY - the payout account of the seller on one sale, so the admin can pay them by hand.
 // The full number is decrypted here and sent to nobody else.
 router.get('/admin/seller-account/:txId', auth, admin, async (req, res) => {
@@ -319,8 +428,10 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const user = await User.findById(id).select('fullName profileImage bio createdAt isBanned isVerified');
-    if (!user || user.isBanned) {
+    const user = await User.findById(id).select(
+      'fullName profileImage bio createdAt isBanned isVerified deletedAt'
+    );
+    if (!user || user.isBanned || user.deletedAt) {
       return res.status(404).json({ error: 'User not found' });
     }
 
