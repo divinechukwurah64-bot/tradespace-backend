@@ -214,7 +214,7 @@ router.post('/auctions/:id/initialize', auth, async (req, res) => {
       buyerId: buyer._id,
       sellerId: auction.sellerId,
       amount,
-      platformCommissionPercent: Number(process.env.PLATFORM_COMMISSION_PERCENT) || 10,
+      platformCommissionPercent: Number(process.env.PLATFORM_COMMISSION_PERCENT) || 8.5,
       paymentStatus: 'pending',
       paystackReference: reference
     });
@@ -266,6 +266,48 @@ router.post('/verify', auth, async (req, res) => {
   } catch (err) {
     console.error('POST /payments/verify error:', describe(err));
     res.status(503).json({ error: 'Could not confirm the payment right now' });
+  }
+});
+
+// AUCTIONS I WON AND HAVE NOT PAID FOR YET - shown on the profile page.
+// Auctions whose payment has already arrived and is only being confirmed are left out.
+router.get('/to-pay', auth, async (req, res) => {
+  try {
+    const auctions = await Auction.find({
+      winnerId: req.user.userId,
+      status: 'awaiting_payment',
+      paymentDueAt: { $gt: new Date() }
+    })
+      .select('title images winningBid paymentDueAt sellerId')
+      .populate('sellerId', 'fullName')
+      .sort({ paymentDueAt: 1 })
+      .limit(20);
+
+    const ids = auctions.map((a) => a._id);
+    const paid = ids.length
+      ? await Transaction.find({
+          auctionId: { $in: ids },
+          buyerId: req.user.userId,
+          paymentStatus: { $in: LIVE_STATUSES }
+        }).select('auctionId')
+      : [];
+    const paidIds = new Set(paid.map((t) => String(t.auctionId)));
+
+    res.json(
+      auctions
+        .filter((a) => !paidIds.has(String(a._id)))
+        .map((a) => ({
+          auctionId: a._id,
+          title: a.title,
+          image: a.images && a.images[0] ? a.images[0] : null,
+          amount: a.winningBid,
+          paymentDueAt: a.paymentDueAt,
+          sellerName: a.sellerId && a.sellerId.fullName ? a.sellerId.fullName : null
+        }))
+    );
+  } catch (err) {
+    console.error('GET /payments/to-pay error:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
