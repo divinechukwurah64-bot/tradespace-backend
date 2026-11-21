@@ -18,6 +18,10 @@ const VERIFY_CODE_MS = 15 * 60 * 1000;
 const VERIFY_RESEND_GAP_MS = 60 * 1000;
 const VERIFY_MAX_ATTEMPTS = 5;
 
+// A real person needs a few seconds to fill in the form. Anything faster is a script.
+const MIN_FORM_MS = 2500;
+const MAX_FORM_MS = 6 * 60 * 60 * 1000;
+
 const MIN_PASSWORD_LENGTH = 8;
 const MAX_PASSWORD_LENGTH = 128;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -36,6 +40,22 @@ const DISPOSABLE_DOMAINS = new Set([
 ]);
 
 const isDisposableEmail = (email) => DISPOSABLE_DOMAINS.has(String(email).split('@')[1] || '');
+
+// Gmail ignores dots and anything after a plus sign, so these all reach the same inbox.
+// Used only to spot duplicate sign-ups. The email is saved as the person typed it.
+// Returns null when the address is not usable.
+const canonicalEmail = (email) => {
+  const parts = String(email).split('@');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+
+  const domain = parts[1];
+  if (domain === 'gmail.com' || domain === 'googlemail.com') {
+    const local = parts[0].split('+')[0].replace(/\./g, '');
+    return local ? `${local}@gmail.com` : null;
+  }
+
+  return email;
+};
 
 if (!process.env.TURNSTILE_SECRET_KEY) {
   console.warn('SETTINGS WARNING: TURNSTILE_SECRET_KEY is not set, so the sign-up bot check is switched off.');
@@ -200,7 +220,18 @@ const issueVerificationCode = async (user, req) => {
 
 router.post('/register', registerLimiter, async (req, res) => {
   try {
-    const { fullName, email, password, phone, acceptedTerms, turnstileToken } = req.body;
+    const { fullName, email, password, acceptedTerms, turnstileToken, website, formOpenedAt } = req.body;
+
+    // Bot traps. The hidden field is empty for real people, and a real person needs a few
+    // seconds to fill in the form. Both answers are the same so a bot learns nothing from them.
+    if (typeof website === 'string' && website.trim() !== '') {
+      return res.status(400).json({ error: 'Please refresh the page and try again.' });
+    }
+    const openedAt = Number(formOpenedAt);
+    const elapsed = Date.now() - openedAt;
+    if (!Number.isFinite(openedAt) || elapsed < MIN_FORM_MS || elapsed > MAX_FORM_MS) {
+      return res.status(400).json({ error: 'Please refresh the page and try again.' });
+    }
 
     if (!isNonEmptyString(fullName) || typeof email !== 'string' || typeof password !== 'string') {
       return res.status(400).json({ error: 'Missing required fields' });
@@ -225,20 +256,30 @@ router.post('/register', registerLimiter, async (req, res) => {
       });
     }
 
+    const canonical = canonicalEmail(cleanEmail);
+    if (!canonical) {
+      return res.status(400).json({ error: 'Please enter a valid email address' });
+    }
+
     if (!(await verifyTurnstile(turnstileToken, req.ip))) {
       return res.status(400).json({ error: 'Please complete the human check and try again' });
     }
 
-    const existingUser = await User.findOne({ email: cleanEmail });
+    // Same inbox counts as the same account, even with Gmail dots or a +tag.
+    // Deleted accounts do not block the address from being used again.
+    const existingUser = await User.findOne({
+      $or: [{ email: cleanEmail }, { emailCanonical: canonical, deletedAt: null }]
+    }).select('_id');
     if (existingUser) {
       return res.status(400).json({ error: 'User already exists' });
     }
 
+    // The phone number is no longer asked for at sign-up. It can be added on the profile page.
     const user = new User({
       fullName: fullName.trim(),
       email: cleanEmail,
+      emailCanonical: canonical,
       password,
-      phone: typeof phone === 'string' ? phone.trim() : undefined,
       acceptedTermsAt: new Date(),
       emailVerified: false
     });

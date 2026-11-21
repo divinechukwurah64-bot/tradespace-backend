@@ -4,6 +4,9 @@ const bcrypt = require('bcryptjs');
 const userSchema = new mongoose.Schema({
   fullName: { type: String, required: true },
   email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+  // The email with Gmail dots and +tags removed. Used only to stop duplicate sign-ups.
+  // Accounts created before this field existed do not have it.
+  emailCanonical: { type: String, default: null, index: true },
   password: { type: String, required: true },
   phone: { type: String },
   profileImage: { type: String, default: null },
