@@ -1,5 +1,6 @@
 const express = require('express');
 const crypto = require('crypto');
+const axios = require('axios');
 const router = express.Router();
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
@@ -13,11 +14,46 @@ const RESET_REQUEST_GAP_MS = 60 * 1000;
 const GENERIC_RESET_MESSAGE =
   'If an account exists for that email, we have sent a password reset link. Check your inbox and spam folder.';
 
+const VERIFY_CODE_MS = 15 * 60 * 1000;
+const VERIFY_RESEND_GAP_MS = 60 * 1000;
+const VERIFY_MAX_ATTEMPTS = 5;
+
 const MIN_PASSWORD_LENGTH = 8;
 const MAX_PASSWORD_LENGTH = 128;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+// Common throwaway email services. This list is not complete, it only stops the most used ones.
+const DISPOSABLE_DOMAINS = new Set([
+  'mailinator.com', 'guerrillamail.com', 'guerrillamail.net', 'guerrillamail.org', 'guerrillamail.biz',
+  'guerrillamail.de', 'guerrillamailblock.com', 'grr.la', 'sharklasers.com', 'spam4.me',
+  '10minutemail.com', '10minutemail.net', 'tempmail.com', 'temp-mail.org', 'temp-mail.io',
+  'tempmailo.com', 'tempail.com', 'tempinbox.com', 'yopmail.com', 'yopmail.net', 'yopmail.fr',
+  'trashmail.com', 'trashmail.net', 'getnada.com', 'nada.email', 'dispostable.com', 'maildrop.cc',
+  'throwawaymail.com', 'fakeinbox.com', 'fakemail.net', 'emailfake.com', 'mintemail.com',
+  'mohmal.com', 'emailondeck.com', 'burnermail.io', 'discard.email', 'spamgourmet.com',
+  'moakt.com', 'tmpmail.org', 'tmail.ws', 'mailnesia.com', 'mytemp.email', 'inboxkitten.com',
+  'harakirimail.com', 'mailcatch.com', 'mailsac.com', 'tmpeml.com', 'dropmail.me'
+]);
+
+const isDisposableEmail = (email) => DISPOSABLE_DOMAINS.has(String(email).split('@')[1] || '');
+
+if (!process.env.TURNSTILE_SECRET_KEY) {
+  console.warn('SETTINGS WARNING: TURNSTILE_SECRET_KEY is not set, so the sign-up bot check is switched off.');
+}
+
 const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
+
+// The code is tied to the account, so a leaked hash cannot be reused on another account
+const hashCode = (userId, code) =>
+  crypto.createHmac('sha256', process.env.JWT_SECRET).update(`${String(userId)}:${code}`).digest('hex');
+
+const safeEqual = (a, b) => {
+  const x = Buffer.from(String(a));
+  const y = Buffer.from(String(b));
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+};
+
+const makeCode = () => String(crypto.randomInt(0, 1000000)).padStart(6, '0');
 
 const normalizeEmail = (value) =>
   typeof value === 'string' ? value.trim().toLowerCase() : '';
@@ -80,6 +116,16 @@ const changePasswordLimiter = rateLimit({
   message: { error: 'Too many attempts. Please wait 15 minutes and try again.' }
 });
 
+// Per logged in user: at most 6 verification emails an hour
+const resendVerifyLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 6,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => String(req.user.userId),
+  message: { error: 'Too many codes requested. Please try again in an hour.' }
+});
+
 // Failed emails are saved to the errorlogs collection so you can see them
 const logEmailFailure = async (err, req) => {
   const reference = crypto.randomBytes(3).toString('hex').toUpperCase();
@@ -97,9 +143,64 @@ const logEmailFailure = async (err, req) => {
   }
 };
 
+// Cloudflare Turnstile. If no secret is set the check is skipped, so nothing breaks before setup.
+const verifyTurnstile = async (token, ip) => {
+  const secret = process.env.TURNSTILE_SECRET_KEY;
+  if (!secret) return true;
+
+  if (typeof token !== 'string' || !token || token.length > 2048) return false;
+
+  try {
+    const params = new URLSearchParams();
+    params.append('secret', secret);
+    params.append('response', token);
+    if (ip) params.append('remoteip', ip);
+
+    const response = await axios.post(
+      'https://challenges.cloudflare.com/turnstile/v0/siteverify',
+      params,
+      { timeout: 10000 }
+    );
+    return !!(response.data && response.data.success);
+  } catch (err) {
+    console.error('Turnstile check failed:', err.message);
+    return false;
+  }
+};
+
+// Saves a fresh 6-digit code on the account and emails it. Returns true if the email went out.
+const issueVerificationCode = async (user, req) => {
+  const code = makeCode();
+
+  user.emailVerificationCodeHash = hashCode(user._id, code);
+  user.emailVerificationExpires = new Date(Date.now() + VERIFY_CODE_MS);
+  user.emailVerificationAttempts = 0;
+  await user.save();
+
+  try {
+    await sendEmail({
+      to: user.email,
+      subject: `Your TradeSpace verification code: ${code}`,
+      text:
+        `Hi ${user.fullName},\n\n` +
+        `Your TradeSpace verification code is ${code}.\n\n` +
+        `It works for 15 minutes. If you did not create a TradeSpace account, you can ignore this email.`,
+      html:
+        `<p>Hi ${escapeHtml(user.fullName)},</p>` +
+        `<p>Your TradeSpace verification code is:</p>` +
+        `<p style="font-size:32px;font-weight:bold;letter-spacing:6px;margin:16px 0;">${code}</p>` +
+        `<p>It works for 15 minutes. If you did not create a TradeSpace account, you can ignore this email.</p>`
+    });
+    return true;
+  } catch (mailErr) {
+    await logEmailFailure(mailErr, req);
+    return false;
+  }
+};
+
 router.post('/register', registerLimiter, async (req, res) => {
   try {
-    const { fullName, email, password, phone, acceptedTerms } = req.body;
+    const { fullName, email, password, phone, acceptedTerms, turnstileToken } = req.body;
 
     if (!isNonEmptyString(fullName) || typeof email !== 'string' || typeof password !== 'string') {
       return res.status(400).json({ error: 'Missing required fields' });
@@ -118,6 +219,15 @@ router.post('/register', registerLimiter, async (req, res) => {
     if (acceptedTerms !== true) {
       return res.status(400).json({ error: 'You must accept the Terms and Conditions' });
     }
+    if (isDisposableEmail(cleanEmail)) {
+      return res.status(400).json({
+        error: 'Please use a permanent email address. Temporary email services are not allowed.'
+      });
+    }
+
+    if (!(await verifyTurnstile(turnstileToken, req.ip))) {
+      return res.status(400).json({ error: 'Please complete the human check and try again' });
+    }
 
     const existingUser = await User.findOne({ email: cleanEmail });
     if (existingUser) {
@@ -129,7 +239,8 @@ router.post('/register', registerLimiter, async (req, res) => {
       email: cleanEmail,
       password,
       phone: typeof phone === 'string' ? phone.trim() : undefined,
-      acceptedTermsAt: new Date()
+      acceptedTermsAt: new Date(),
+      emailVerified: false
     });
 
     try {
@@ -142,11 +253,21 @@ router.post('/register', registerLimiter, async (req, res) => {
       throw saveErr;
     }
 
+    const verificationSent = await issueVerificationCode(user, req);
+
     const token = jwt.sign({ userId: user._id, email: user.email }, process.env.JWT_SECRET, { expiresIn: '7d' });
     res.status(201).json({
       message: 'User registered successfully',
       token,
-      user: { _id: user._id, fullName: user.fullName, email: user.email, phone: user.phone, profileImage: user.profileImage }
+      verificationSent,
+      user: {
+        _id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        phone: user.phone,
+        profileImage: user.profileImage,
+        emailVerified: false
+      }
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -183,10 +304,97 @@ router.post('/login', loginLimiter, async (req, res) => {
         email: user.email,
         phone: user.phone,
         profileImage: user.profileImage,
-        sellerRating: user.sellerRating
+        sellerRating: user.sellerRating,
+        emailVerified: user.emailVerified !== false
       }
     });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// VERIFY EMAIL - the 6-digit code from the email
+router.post('/verify-email', authMiddleware, async (req, res) => {
+  try {
+    const code = req.body && req.body.code;
+    if (typeof code !== 'string' || !/^\d{6}$/.test(code)) {
+      return res.status(400).json({ error: 'Enter the 6-digit code from your email' });
+    }
+
+    const user = await User.findById(req.user.userId).select(
+      '+emailVerificationCodeHash +emailVerificationExpires +emailVerificationAttempts'
+    );
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (user.emailVerified !== false) {
+      return res.json({ verified: true });
+    }
+
+    if (
+      !user.emailVerificationCodeHash ||
+      !user.emailVerificationExpires ||
+      user.emailVerificationExpires.getTime() < Date.now()
+    ) {
+      return res.status(400).json({ error: 'This code has expired. Request a new one.' });
+    }
+
+    if ((user.emailVerificationAttempts || 0) >= VERIFY_MAX_ATTEMPTS) {
+      return res.status(400).json({ error: 'Too many wrong tries. Request a new code.' });
+    }
+
+    if (!safeEqual(hashCode(user._id, code), user.emailVerificationCodeHash)) {
+      user.emailVerificationAttempts = (user.emailVerificationAttempts || 0) + 1;
+      await user.save();
+      return res.status(400).json({ error: 'That code is not correct' });
+    }
+
+    user.emailVerified = true;
+    user.emailVerificationCodeHash = null;
+    user.emailVerificationExpires = null;
+    user.emailVerificationAttempts = 0;
+    await user.save();
+
+    res.json({ verified: true });
+  } catch (err) {
+    console.error('POST /auth/verify-email error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// SEND A NEW VERIFICATION CODE
+router.post('/resend-verification', authMiddleware, resendVerifyLimiter, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId).select('+emailVerificationExpires');
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    if (user.emailVerified !== false) {
+      return res.json({ verified: true });
+    }
+
+    // If a code was sent in the last minute, do not send another one
+    const recentlySent =
+      user.emailVerificationExpires &&
+      user.emailVerificationExpires.getTime() - Date.now() > VERIFY_CODE_MS - VERIFY_RESEND_GAP_MS;
+
+    if (recentlySent) {
+      return res.status(429).json({
+        error: 'A code was just sent. Please wait a minute before asking for another one.',
+        code: 'WAIT'
+      });
+    }
+
+    const sent = await issueVerificationCode(user, req);
+    if (!sent) {
+      return res.status(503).json({ error: 'We could not send the email right now. Please try again in a few minutes.' });
+    }
+
+    res.json({ sent: true });
+  } catch (err) {
+    console.error('POST /auth/resend-verification error:', err);
     res.status(500).json({ error: err.message });
   }
 });

@@ -32,6 +32,12 @@ const userSchema = new mongoose.Schema({
     select: false
   },
   acceptedTermsAt: { type: Date, default: null },
+  // New sign-ups are saved with emailVerified false. Accounts that existed before this field
+  // was added have no value stored, so they read as verified through the default.
+  emailVerified: { type: Boolean, default: true },
+  emailVerificationCodeHash: { type: String, default: null, select: false },
+  emailVerificationExpires: { type: Date, default: null, select: false },
+  emailVerificationAttempts: { type: Number, default: 0, select: false },
   // Set when the person deletes their account. The record stays, anonymised, so old bids, reviews and sales still work.
   deletedAt: { type: Date, default: null },
   passwordChangedAt: { type: Date, default: null },

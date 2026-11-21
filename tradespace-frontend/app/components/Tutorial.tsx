@@ -3,8 +3,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { X, ArrowRight, ArrowLeft } from 'lucide-react';
 
-const STORAGE_KEY = 'ts_tutorial_done';
-
 type Step = {
   title: string;
   body: string;
@@ -20,7 +18,7 @@ const STEPS: Step[] = [
   },
   {
     title: 'Browse auctions',
-    body: 'Click Auctions to see everything up for sale. You can search, sort by price or time, and filter by category.',
+    body: 'Open Auctions to see everything up for sale. You can search, sort by price or time, and filter by category.',
     selector: '[data-tutorial="auctions-link"]',
     position: 'bottom',
   },
@@ -47,7 +45,7 @@ const STEPS: Step[] = [
   },
   {
     title: 'Selling an item',
-    body: 'Press Create Auction from your profile or the auctions page. Add up to 5 photos, write a description, set a starting price of at least ₦500, and your auction runs for 24 hours.',
+    body: 'Press Create Auction on the Auctions page. Add up to 5 photos, write a description, set a starting price of at least ₦500, and your auction runs for 24 hours.',
     selector: '[data-tutorial="create-auction-btn"]',
     position: 'bottom',
   },
@@ -59,20 +57,31 @@ const STEPS: Step[] = [
   },
   {
     title: "You're ready",
-    body: 'That is everything. Browse the auctions to get started, or list something you want to sell.',
+    body: 'That is everything. Browse the auctions to get started, or list something you want to sell. You can open this tour again any time from the help button or the menu.',
     position: 'center',
   },
 ];
 
-function getRect(selector: string) {
+// Returns null when the element is missing or hidden (for example desktop links on a phone),
+// so that step falls back to a centred card.
+function getRect(selector: string): DOMRect | null {
   const el = document.querySelector(selector);
   if (!el) return null;
-  return el.getBoundingClientRect();
+  const rect = el.getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) return null;
+  return rect;
 }
 
-function Spotlight({ rect }: { rect: DOMRect | null }) {
-  if (!rect) return null;
+function Backdrop() {
+  return (
+    <div
+      className="fixed inset-0"
+      style={{ zIndex: 59, background: 'rgba(0,0,0,0.6)' }}
+    />
+  );
+}
 
+function Spotlight({ rect }: { rect: DOMRect }) {
   const pad = 8;
   const top = rect.top - pad;
   const left = rect.left - pad;
@@ -87,14 +96,7 @@ function Spotlight({ rect }: { rect: DOMRect | null }) {
       <defs>
         <mask id="spotlight-mask">
           <rect x="0" y="0" width="100%" height="100%" fill="white" />
-          <rect
-            x={left}
-            y={top}
-            width={width}
-            height={height}
-            rx="8"
-            fill="black"
-          />
+          <rect x={left} y={top} width={width} height={height} rx="8" fill="black" />
         </mask>
       </defs>
       <rect
@@ -140,11 +142,14 @@ function Bubble({
   const isLast = stepIndex === total - 1;
   const position = step.position || (rect ? 'bottom' : 'center');
 
-  let style: React.CSSProperties = {
+  const pad = 16;
+  const bubbleW = Math.min(320, window.innerWidth - pad * 2);
+  const bubbleH = 220;
+
+  const style: React.CSSProperties = {
     position: 'fixed',
     zIndex: 61,
-    maxWidth: 320,
-    width: 'calc(100vw - 32px)',
+    width: bubbleW,
   };
 
   if (position === 'center' || !rect) {
@@ -152,22 +157,21 @@ function Bubble({
     style.left = '50%';
     style.transform = 'translate(-50%, -50%)';
   } else {
-    const pad = 16;
-    const bubbleH = 200;
-    const bubbleW = 320;
+    const clampLeft = (value: number) =>
+      Math.max(pad, Math.min(value, window.innerWidth - bubbleW - pad));
 
     if (position === 'bottom') {
       style.top = Math.min(rect.bottom + pad, window.innerHeight - bubbleH - pad);
-      style.left = Math.max(pad, Math.min(rect.left, window.innerWidth - bubbleW - pad));
+      style.left = clampLeft(rect.left);
     } else if (position === 'top') {
       style.top = Math.max(pad, rect.top - bubbleH - pad);
-      style.left = Math.max(pad, Math.min(rect.left, window.innerWidth - bubbleW - pad));
+      style.left = clampLeft(rect.left);
     } else if (position === 'right') {
       style.top = Math.max(pad, rect.top);
-      style.left = Math.min(rect.right + pad, window.innerWidth - bubbleW - pad);
+      style.left = clampLeft(rect.right + pad);
     } else {
       style.top = Math.max(pad, rect.top);
-      style.left = Math.max(pad, rect.left - bubbleW - pad);
+      style.left = clampLeft(rect.left - bubbleW - pad);
     }
   }
 
@@ -219,7 +223,7 @@ function Bubble({
               onClick={onSkip}
               className="px-3 py-1.5 rounded-lg border border-gray-200 text-gray-500 text-sm hover:bg-gray-50"
             >
-              Figure it out myself
+              Skip
             </button>
           )}
           <button
@@ -227,7 +231,9 @@ function Bubble({
             onClick={isLast ? onSkip : onNext}
             className="flex items-center gap-1 px-4 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-bold hover:bg-blue-500"
           >
-            {isLast ? 'Done' : (
+            {isLast ? (
+              'Done'
+            ) : (
               <>
                 Next
                 <ArrowRight className="w-3.5 h-3.5" />
@@ -240,19 +246,10 @@ function Bubble({
   );
 }
 
+// Kept so any file that still imports it keeps building. The Navbar now decides when to open the tour.
 export function useTutorial() {
   const [open, setOpen] = useState(false);
-
   const start = useCallback(() => setOpen(true), []);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (!localStorage.getItem(STORAGE_KEY)) {
-      const timer = setTimeout(() => setOpen(true), 1200);
-      return () => clearTimeout(timer);
-    }
-  }, []);
-
   return { open, start, setOpen };
 }
 
@@ -273,30 +270,34 @@ export default function Tutorial({
     setStep(0);
   }, [open]);
 
+  // Finds the highlighted element for this step, and follows it if the screen changes
   useEffect(() => {
     if (!open) return;
-    if (current.selector) {
-      const r = getRect(current.selector);
-      setRect(r);
-      if (r) {
-        const el = document.querySelector(current.selector) as HTMLElement;
-        el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      }
-    } else {
-      setRect(null);
-    }
-  }, [open, step, current.selector]);
 
-  const handleClose = useCallback(() => {
-    localStorage.setItem(STORAGE_KEY, '1');
-    onClose();
-  }, [onClose]);
+    const measure = () => {
+      setRect(current.selector ? getRect(current.selector) : null);
+    };
+
+    if (current.selector) {
+      const el = document.querySelector(current.selector) as HTMLElement | null;
+      el?.scrollIntoView({ block: 'nearest' });
+    }
+
+    measure();
+    window.addEventListener('resize', measure);
+    window.addEventListener('scroll', measure, true);
+
+    return () => {
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('scroll', measure, true);
+    };
+  }, [open, step, current.selector]);
 
   if (!open) return null;
 
   return (
     <>
-      <Spotlight rect={rect} />
+      {rect ? <Spotlight rect={rect} /> : <Backdrop />}
       <Bubble
         step={current}
         rect={rect}
@@ -304,7 +305,7 @@ export default function Tutorial({
         total={STEPS.length}
         onNext={() => setStep((s) => Math.min(s + 1, STEPS.length - 1))}
         onPrev={() => setStep((s) => Math.max(s - 1, 0))}
-        onSkip={handleClose}
+        onSkip={onClose}
       />
     </>
   );

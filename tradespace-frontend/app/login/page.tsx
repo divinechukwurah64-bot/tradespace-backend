@@ -42,7 +42,9 @@ export default function Login() {
       });
       localStorage.setItem('token', response.data.token);
       localStorage.setItem('user', JSON.stringify(response.data.user));
-      window.location.href = '/auctions';
+
+      // Accounts that have not verified their email go straight to the code page
+      window.location.href = response.data.user?.emailVerified === false ? '/verify-email' : '/auctions';
     } catch (err: any) {
       setError(err.response?.data?.error || 'Login failed');
     } finally {

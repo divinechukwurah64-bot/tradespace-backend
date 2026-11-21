@@ -4,6 +4,7 @@ const rateLimit = require('express-rate-limit');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const authMiddleware = require('../middleware/auth');
+const verified = require('../middleware/verified');
 
 const router = express.Router();
 
@@ -52,7 +53,7 @@ const signLimiter = rateLimit({
 // POST /api/uploads/sign
 // Body: { kind: 'auction' | 'gig' | 'profile', contentType: 'image/jpeg' }
 // Returns a one-time link the browser uploads the photo to, and the final public address.
-router.post('/sign', authMiddleware, signLimiter, async (req, res) => {
+router.post('/sign', authMiddleware, verified, signLimiter, async (req, res) => {
   try {
     if (!r2IsConfigured()) {
       return res.status(503).json({ error: 'Photo storage is not set up' });

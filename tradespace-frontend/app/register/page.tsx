@@ -1,19 +1,20 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { authAPI } from '@/lib/api';
 import { Mail, Lock, User, Phone } from 'lucide-react';
+import TurnstileWidget, { turnstileEnabled } from '../components/TurnstileWidget';
 
 const MIN_PASSWORD_LENGTH = 8;
 const MAX_PASSWORD_LENGTH = 128;
 
 export default function Register() {
-  const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [acceptedTerms, setAcceptedTerms] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState('');
+  const [turnstileReset, setTurnstileReset] = useState(0);
   const [formData, setFormData] = useState({
     fullName: '',
     email: '',
@@ -47,6 +48,11 @@ export default function Register() {
       return;
     }
 
+    if (turnstileEnabled && !turnstileToken) {
+      setError('Please complete the check below the form first');
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -54,13 +60,16 @@ export default function Register() {
         ...formData,
         email: formData.email.trim(),
         acceptedTerms: true,
+        turnstileToken,
       });
       localStorage.setItem('token', response.data.token);
       localStorage.setItem('user', JSON.stringify(response.data.user));
-      window.location.href = '/auctions';
+      // The verify page sends the code if the sign-up email did not go out
+      window.location.href = `/verify-email?sent=${response.data.verificationSent ? 1 : 0}`;
     } catch (err) {
       setError(err.response?.data?.error || 'Registration failed');
-    } finally {
+      // A Cloudflare check can only be used once, so start a new one
+      setTurnstileReset((n) => n + 1);
       setLoading(false);
     }
   };
@@ -111,6 +120,7 @@ export default function Register() {
                 placeholder="you@example.com"
               />
             </div>
+            <p className="text-xs text-gray-500 mt-1">We will send a 6-digit code to this address.</p>
           </div>
 
           <div>
@@ -166,6 +176,8 @@ export default function Register() {
               </Link>
             </label>
           </div>
+
+          <TurnstileWidget onToken={setTurnstileToken} resetKey={turnstileReset} />
 
           <button
             type="submit"
